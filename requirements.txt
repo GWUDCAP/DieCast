@@ -1,0 +1,6 @@
+pytest>=7.0.0
+pytest-xprocess>=0.22.0
+mypy>=1.0.0
+pytest-asyncio
+
+# Add other dependencies below if needed
