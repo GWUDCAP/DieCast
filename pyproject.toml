@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-diecast"
-version = "0.2.0"  # Post-hardening release
+version = "0.2.1"  # Add keywords for PyPI visibility
 description = "A Python tool to enforce type hints as runtime assertions."
 readme = "README.md"
 requires-python = ">=3.8"
