@@ -1,5 +1,6 @@
 # ===== MODULE DOCSTRING ===== #
 """Error utilities for the DieCast package, including custom exceptions and message formatting."""
+#-#
 
 # ===== IMPORTS ===== #
 
@@ -11,6 +12,7 @@ from typing import (
 import dataclasses
 import inspect
 import logging
+##-##
 
 ## ===== LOCAL ===== ##
 from .config import (
@@ -18,11 +20,14 @@ from .config import (
     COLOR_CYAN, COLOR_BOLD, COLOR_RESET, COLOR_RED
 )
 from .logging import _log
+##-##
+#-#
 
 # ===== GLOBALS ===== #
 
 ## ===== LOGGER ===== ##
 _log: Final[logging.Logger] = logging.getLogger('diecast')
+##-##
 
 ## ===== EXPORTS ===== ##
 __all__: Final[List[str]] = [
@@ -34,9 +39,10 @@ __all__: Final[List[str]] = [
     'generate_arg_error_message',
     'generate_return_error_message',
 ]
+##-##
+#-#
 
 # ===== CLASSES ===== #
-
 @dataclasses.dataclass(frozen=True)
 class Obituary:
     """Holds structured details about a type check failure.
@@ -55,10 +61,9 @@ class Obituary:
     value: Any
     path: List[Union[str, int]]
     message: Optional[str] = None
-
+#-#
 
 # ===== FUNCTIONS ===== #
-
 def _create_obituary(expected_repr: str, received_repr: str, value: Any, path: List[Union[str, int]], message: Optional[str] = None) -> Obituary:
     """Creates a structured object containing details about a type check failure.
 
@@ -325,3 +330,4 @@ def generate_return_error_message(
         # Maybe get this from obituary.cause if added?
         is_yield_value=is_yield_value
     )
+#-#

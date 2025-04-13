@@ -11,7 +11,7 @@ Features:
 - Support for complex types (Union, Optional, List, Dict, etc.)
 - Detailed error messages with variable names and stack traces
 - Automatic type checking for entire modules using mold()
-- Configurable logging for debugging and error tracking
+- Standard Python logging integration (logger name 'diecast', requires user configuration)
 - Thread-safe operation
 
 Basic Usage:
@@ -23,7 +23,7 @@ Basic Usage:
 
     # Type checking is enforced
     greet("World")  # Returns "Hello, World!"
-    greet(123)      # Raises TypeError with detailed error message
+    greet(123)      # Raises YouDiedError (subclass of TypeError) with detailed error message
 
 Using the mold function:
     # In your module
@@ -41,21 +41,15 @@ Using the mold function:
 
     # Now calls to process_data and another_func will be type-checked
     process_data([1, 2]) # OK
-    # process_data(["a"]) # Raises TypeError
+    # process_data(["a"]) # Raises YouDiedError
     another_func(True) # OK
-    # another_func(1) # Raises TypeError
-
-Configuration:
-    The package can be configured using the following functions:
-    - set_verbosity(): Control logging verbosity
-    - enable_mold(): Enable automatic type checking for imported modules
-    - disable_mold(): Disable automatic type checking for imported modules
-
+    # another_func(1) # Raises YouDiedError
 Version Management:
     The package version is managed through the __version__ variable.
     For development, this is a static version number. For releases,
     this should be updated to match the release version.
 """
+#-#
 
 # ===== IMPORTS ===== #
 
@@ -63,19 +57,24 @@ Version Management:
 from .logging import _log
 from .decorator import diecast, ignore
 from .mold import mold
+##-##
+#-#
 
 # ===== GLOBALS ===== #
 
 ## ===== VERSION ===== ##
 __version__ = "0.1.0"
+##-##
 
 ## ===== API SETUP ===== ##
 # Attach ignore as an attribute to the main decorator
 diecast.ignore = ignore
+##-##
 
 ## ===== PUBLIC API ALIAS ===== ##
 # Provide 'logger' alias for public API compatibility
 logger = _log
+##-##
 
 ## ===== EXPORTS ===== ##
 # Core functionality
@@ -84,6 +83,8 @@ __all__ = [
     'ignore',       # Decorator to ignore type checking (accessible via diecast.ignore)
     'mold',         # Function to apply type checking to a module
 ]
+##-##
+#-#
 
 # Configuration functions (set_verbosity removed from public API)
 

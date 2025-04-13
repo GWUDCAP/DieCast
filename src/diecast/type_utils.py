@@ -16,6 +16,7 @@ including:
 The module is designed to work seamlessly with Python's typing system
 and provides detailed error messages when type violations occur.
 """
+#-#
 
 # ===== IMPORTS ===== #
 
@@ -55,6 +56,7 @@ except ImportError: # Python 3.7/3.8 compatibility
         from typing_extensions import Annotated
     except ImportError:
         Annotated = None # Define as None if not available
+##-##
 
 ## ===== LOCAL ===== ##
 from .error_utils import (
@@ -63,6 +65,8 @@ from .error_utils import (
     _format_path, 
     Obituary
 )
+##-##
+#-#
 
 # ===== GLOBALS ===== #
 class YouDiedError(TypeError):
@@ -71,16 +75,20 @@ class YouDiedError(TypeError):
         super().__init__(message)
         self.obituary = obituary
         self.cause = cause
+
 ## ===== TYPE ALIASES ===== ##
 NoneType: Final[Type[None]] = type(None)
+##-##
 
 ## ===== LOGGER ===== ##
 _log: Final[logging.Logger] = logging.getLogger('diecast')
+##-##
 
 ## ===== MRO CACHE ===== ##
 # Global cache for MRO sets (maps type -> set of MRO types)
 _mro_cache: Dict[type, Set[type]] = {}
 _mro_cache_lock = threading.Lock() # Thread safety for MRO cache
+##-##
 
 ## ===== CHECK_TYPE CACHE ===== ##
 # Global cache for TypeVar bindings within a specific function call context
@@ -88,16 +96,20 @@ _mro_cache_lock = threading.Lock() # Thread safety for MRO cache
 # REPLACED threading.local with a standard dict and lock
 _TYPEVAR_BINDINGS: Dict[Tuple[int, TypeVar], Type] = {}
 _typevar_bindings_lock = threading.Lock() # Thread safety for bindings
+##-##
 
 ## ===== OBITUARY CACHE ===== ##
 # Global cache for check_type results (used for safe-to-cache types)
 # Maps (value_type, expected_type, func_id, path_tuple) -> (bool_match, Optional[Dict]_fail_details)
 _check_type_cache_obituary: Dict[Tuple[type, Any, Optional[str], Optional[Tuple[Union[str, int], ...]]], Tuple[bool, Optional[Obituary]]] = {}
 _check_type_cache_lock = threading.Lock()
+##-##
 
 ## ===== TYPE HANDLERS ===== ##
 TypeCheckHandler3Args = Callable[[Any, Any, List[Union[str, int]]], Optional[Tuple[bool, Optional[Obituary]]]]
 TypeCheckHandler5Args = Callable[[Any, Any, Dict[str, Any], Optional[Dict[str, Any]], List[Union[str, int]]], Optional[Tuple[bool, Optional[Obituary]]]]
+##-##
+#-#
 
 # ===== FUNCTIONS ===== #
 
@@ -2488,6 +2500,7 @@ def check_type(
          return (False, _create_obituary(format_type_for_display(expected_type), value, path, "Internal error: Check result undetermined"))
 
     return final_result
+#-#
 
 # ===== PUBLIC API EXPORTS ===== #
 
@@ -2505,9 +2518,3 @@ __all__: Final[List[str]] = [
     'NoneType', # Useful constant
     # '_RETURN_ANNOTATION', # No longer needed - use inspect directly?
 ]
-
-# REMOVED _resolve_typevar_from_instance function entirely
-
-# Thread-local storage for TypeVar bindings within a function call context
-# REMOVED - replaced by standard dict above
-# _TYPEVAR_BINDINGS = threading.local()

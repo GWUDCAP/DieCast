@@ -29,9 +29,9 @@ Usage:
         for i in range(n):
             yield i
 """
+#-#
 
 # ===== IMPORTS ===== #
-
 
 ## ===== STANDARD LIBRARY ===== ##
 import collections.abc
@@ -50,6 +50,7 @@ import asyncio
 import typing
 import types
 import sys
+##-##
 
 ## ===== LOCAL ===== ##
 from .error_utils import (
@@ -70,7 +71,8 @@ from .config import (
     _SELF_NAMES
 )
 from .logging import _log
-
+##-##
+#-#
 
 # ===== GLOBALS ===== #
 
@@ -80,7 +82,8 @@ __all__: Final[List[str]] = ['diecast', 'ignore']
 # Global cache for specialized generic classes to avoid redundant creation
 _SPECIALIZED_CLASS_CACHE: Dict[Tuple[Type, Any], Type] = {}
 _SPECIALIZED_CLASS_CACHE_LOCK = threading.Lock()
-
+##-##
+#-#
 
 # ===== FUNCTIONS ===== #
 
@@ -99,18 +102,11 @@ def _handle_type_error(
     original_annotation: Optional[Any] = None # The original annotation (e.g., the TypeVar)
 ) -> None:
     """Centralized function to handle type errors: get info, generate message, raise."""
-    # !!! ADDED DEBUG LOG !!!
-    _log.debug(f"TRACE _handle_type_error: Received error_type='{error_type}', obituary={obituary!r}")
-    _log.debug(f"TRACE _handle_type_error: Received error_type='{error_type}', obituary={obituary!r}")
-    # --- Original Code Below ---
     if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE _handle_type_error: Received error_type='{error_type}', obituary={obituary!r}")
+        _log.debug(f"TRACE _handle_type_error: Received error_type='{error_type}', obituary={obituary!r}")
         _log.debug(f"TRACE decorator._handle_type_error: Handling '{error_type}' error for '{func_info['func_name']}'")
 
-    # !!! ADDED DEBUG LOG !!!
-
-    caller_info = _get_caller_info(depth=caller_depth)
-
-    # !!! ADDED DEBUG LOG !!!
     caller_info = _get_caller_info(depth=caller_depth)
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._handle_type_error: Gathered caller_info: {caller_info!r}")
@@ -133,7 +129,8 @@ def _handle_type_error(
             is_yield_value=is_yield_check, # Use the flag passed in
             original_annotation=original_annotation # Pass down original annotation
         )
-        _log.critical(f"!!! _handle_type_error: Calling generate_return_error_message with annotation={annotation!r}, original_annotation={original_annotation!r}") # DEBUG LOG
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"!!! _handle_type_error: Calling generate_return_error_message with annotation={annotation!r}, original_annotation={original_annotation!r}") # DEBUG LOG
     else:
         # Fallback for unknown error types
         _log.error(f"_handle_type_error called with unknown error_type: {error_type}")
@@ -141,12 +138,9 @@ def _handle_type_error(
 
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._handle_type_error: Generated error message (len={len(error_msg)}).")
-    # !!! ADDED DEBUG LOG !!!
-    # Raise the correct exception with cause and obituary
-    if _log.isEnabledFor(logging.DEBUG):
-        # Use explicit repr() for safety
         _log.debug(f"TRACE decorator._handle_type_error: Raising YouDiedError with obituary: {repr(obituary)}") 
     raise YouDiedError(error_msg, obituary=obituary, cause=error_type)
+##-##
 
 ## ===== FUNCTION INFO ===== ##
 def _get_func_info(func: Callable) -> Dict[str, Any]:
@@ -182,10 +176,7 @@ def _get_func_info(func: Callable) -> Dict[str, Any]:
         _log.debug(f"TRACE decorator._get_func_info: Extracted info: {info!r}")
         _log.debug(f"TRACE decorator._get_func_info: Exiting")
     return info
-
-
-
-
+##-##
 
 ## ===== ARGUMENT CHECKING ===== ##
 def _check_arguments(
@@ -227,7 +218,7 @@ def _check_arguments(
     effective_localns['_func_id'] = func_id
     bound_args.apply_defaults()
 
-    # --- Determine if this is likely an instance method and get self/cls --- 
+    ### ----- Determine if this is likely an instance method and get self/cls ----- ###
     first_param_name = next(iter(sig.parameters), None)
     instance_obj = None
     is_likely_instance_method = False
@@ -244,9 +235,10 @@ def _check_arguments(
         else:
              if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._check_arguments: First arg '{first_param_name}' not in bound args. Cannot determine instance context.")
-    # --- End instance method check ---
+    ###-###
 
     for i, (name, param) in enumerate(sig.parameters.items()):
+        ### ----- Guards for self/cls/Any/missing hints ----- ###
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE decorator._check_arguments: Checking param #{i}: name='{name}', Parameter={param}")
 
@@ -266,8 +258,9 @@ def _check_arguments(
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._check_arguments: Skipping parameter '{name}' (annotation is Any).")
             continue
+        ###-###
 
-        # --- BEGIN TypeVar Resolution (USING PASSED instance_map) ---
+        ### ----- TypeVar Resolution (USING PASSED instance_map) ----- ###
         effective_annotation = annotation # Start with original hint
         
         # PRIORITY 1: Use provided instance map
@@ -280,31 +273,14 @@ def _check_arguments(
             # else: TypeVar not in map or mapped to another TypeVar - use original annotation
 
         # PRIORITY 2: Fallback to function-level consistency (handled in check_type -> _check_typevar)
-        # No change needed here, check_type will handle it if effective_annotation is still a TypeVar
+        ###-###
 
-        # --- BEGIN TypeVar Resolution (USING PASSED instance_map) ---
-        effective_annotation = annotation # Start with original hint
-        
-        # PRIORITY 1: Use provided instance map
-        if instance_map is not None and isinstance(annotation, TypeVar):
-            resolved_type = instance_map.get(annotation)
-            if resolved_type is not None and not isinstance(resolved_type, TypeVar): # Ensure it's resolved to a concrete type or unbound TypeVar
-                effective_annotation = resolved_type
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._check_arguments: Resolved TypeVar {annotation!r} to {resolved_type!r} using PASSED instance map for param '{name}'.")
-            # else: TypeVar not in map or mapped to another TypeVar - use original annotation
-
-        # PRIORITY 2: Fallback to function-level consistency (handled in check_type -> _check_typevar)
-        # No change needed here, check_type will handle it if effective_annotation is still a TypeVar
-
-        # --- END TypeVar Resolution (USING PASSED instance_map) ---
-        # --- END TypeVar Resolution (USING PASSED instance_map) --- 
-        
-        # Prepare local namespace (excluding current arg value)
+        ### ----- Prepare local namespace (excluding current arg value) ----- ###
         current_arg_localns = effective_localns.copy()
         current_arg_localns.pop(name, None)
+        ###-###
         
-        # --- Handle different parameter kinds (Using effective_annotation) --- #
+        ### ----- Handle different parameter kinds (Using effective_annotation) ----- ###
         if param.kind == param.VAR_POSITIONAL: # *args
             if name in bound_args.arguments:
                 args_tuple = bound_args.arguments[name]
@@ -367,11 +343,6 @@ def _check_arguments(
                             obituary=obituary,
                             caller_depth=caller_depth,
                             param=param, # Pass the **kwargs param itself
-                            # We need to indicate it's a kwarg item, maybe pass kwarg_key?
-                            # Let's pass param name and is_kwarg=True; error msg generator needs update
-                            # Current error generator uses param.name which is just 'kwargs'
-                            # This needs more thought on how best to represent **kwargs failure origin
-                            # For now, use existing logic, but this is imperfect.
                             arg_index=None, # Index not applicable
                             is_kwarg=True
                         )
@@ -407,10 +378,11 @@ def _check_arguments(
                 # that wasn't applied correctly, or if binding failed silently.
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.warning(f"Argument '{name}' missing from bound_args.arguments despite apply_defaults(). Skipping check.")
+            ###-###
 
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._check_arguments: All argument checks passed for func_id={func_id} ('{func_info['func_name']}'). Exiting.")
-
+##-##
 
 ## ===== RETURN VALUE CHECKING ===== ##
 def _check_return_value(
@@ -443,6 +415,7 @@ def _check_return_value(
     Raises:
         TypeError: If the return value fails its type check.
     """
+    ### ----- Defensive guards for unhandlableable cases ----- ###
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._check_return_value: Entering for func_id={func_id} ('{func_info['func_name']}') with instance_map: {instance_map}") # UPDATED Log
         _log.debug(f"TRACE decorator._check_return_value: Result={result!r}, Type={type(result).__name__}, Hints={hints!r}")
@@ -462,8 +435,9 @@ def _check_return_value(
             _log.debug(f"TRACE decorator._check_return_value: Return annotation is Any. Skipping check.")
             _log.debug(f"TRACE decorator._check_return_value: Exiting, returning original result.")
         return result
+    ###-###
 
-    # --- BEGIN TypeVar Resolution (USING PASSED instance_map) ---
+    ### ----- BEGIN TypeVar Resolution (USING PASSED instance_map) ----- ###
     effective_return_annotation = return_annotation
     
     # PRIORITY 1: Use provided instance map
@@ -473,18 +447,15 @@ def _check_return_value(
             effective_return_annotation = resolved_type
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._check_return_value: Resolved return TypeVar {return_annotation!r} to {resolved_type!r} using PASSED instance map.")
-        # else: TypeVar not in map or mapped to another TypeVar - use original annotation
 
     # PRIORITY 2: Fallback to function-level consistency (handled in check_type -> _check_typevar)
-    # No change needed here, check_type will handle it if effective_annotation is still a TypeVar
-    # --- END TypeVar Resolution ---
-    _log.debug(f"TRACE _check_return_value: Received instance_map: {instance_map!r}")
-    _log.debug(f"TRACE _check_return_value: Original return_annotation: {return_annotation!r}")
-    _log.debug(f"TRACE _check_return_value: Effective return_annotation after map lookup: {effective_return_annotation!r}")
+    ###-###
 
-    _log.debug(f"TRACE _check_return_value: Received instance_map: {instance_map!r}")
-    _log.debug(f"TRACE _check_return_value: Original return_annotation: {return_annotation!r}")
-    _log.debug(f"TRACE _check_return_value: Effective return_annotation after map lookup: {effective_return_annotation!r}")
+    ### ----- Prepare local namespace (excluding current return value) ----- ###
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE _check_return_value: Received instance_map: {instance_map!r}")
+        _log.debug(f"TRACE _check_return_value: Original return_annotation: {return_annotation!r}")
+        _log.debug(f"TRACE _check_return_value: Effective return_annotation after map lookup: {effective_return_annotation!r}")
     origin = typing.get_origin(effective_return_annotation) # Use potentially resolved annotation
     args_return = typing.get_args(effective_return_annotation) # Use potentially resolved annotation
     caller_depth = 2
@@ -494,8 +465,9 @@ def _check_return_value(
     effective_localns['_func_id'] = func_id
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._check_return_value: Effective localns for check_type: {effective_localns!r}")
+    ###-###
 
-    # --- Generator Handling (using effective_return_annotation) ---
+    ### ----- Generator Handling (using effective_return_annotation) ----- ###
     # Define sets of sync and async generator/iterator types
     SYNC_GENERATOR_TYPES = {Generator, collections.abc.Generator, Iterator, collections.abc.Iterator}
     ASYNC_GENERATOR_TYPES = {AsyncGenerator, collections.abc.AsyncGenerator, AsyncIterator, collections.abc.AsyncIterator}
@@ -554,14 +526,17 @@ def _check_return_value(
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._check_return_value: Sync generator for '{func_info['func_name']}' effective yield/return types are Any. Returning original generator.")
                 return result
+    ###-###
 
-    # --- Async Generator Handling ---
+    ### ----- Async Generator Handling ----- ###
+    if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE _check_return_value: Calling check_type for return value. Value={result!r}, Annotation={effective_return_annotation!r}")
     is_async_gen_hint = origin in ASYNC_GENERATOR_TYPES
     is_async_gen_result = isinstance(result, collections.abc.AsyncGenerator)
     
     if is_async_gen_hint or is_async_gen_result:
-        _log.debug(f"TRACE _check_return_value: Calling check_type for return value. Value={result!r}, Annotation={effective_return_annotation!r}")
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE _check_return_value: Calling check_type for return value. Value={result!r}, Annotation={effective_return_annotation!r}")
         # Extract Yield type based on the hint origin
         yield_type = Any
         if is_async_gen_hint and args_return:
@@ -609,8 +584,9 @@ def _check_return_value(
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._check_return_value: Async generator for '{func_info['func_name']}' effective yield type is Any. Returning original async generator.")
                 return result
+    ###-###
 
-    # --- Coroutine Result Handling ---
+    ### ----- Coroutine Result Handling ----- ###
     # --- Determine the actual type to check against ---
     check_against_type = effective_return_annotation # Start with the potentially resolved annotation
     is_coroutine_result_check = False # Not relevant here, but kept for structure
@@ -625,24 +601,25 @@ def _check_return_value(
         # Resolve the inner coroutine return type if it's a TypeVar
         effective_coroutine_return_type = coroutine_return_type
         if instance_map is not None and isinstance(coroutine_return_type, TypeVar):
-             resolved_inner = instance_map.get(coroutine_return_type)
-             if resolved_inner is not None and not isinstance(resolved_inner, TypeVar):
-                 effective_coroutine_return_type = resolved_inner
+            resolved_inner = instance_map.get(coroutine_return_type)
+            if resolved_inner is not None and not isinstance(resolved_inner, TypeVar):
+                effective_coroutine_return_type = resolved_inner
 
         check_against_type = effective_coroutine_return_type # Update check target
         
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE decorator._check_return_value: Hint is Coroutine. Checking result against effective inner type: {check_against_type!r}")
         if check_against_type is Any:
-             if _log.isEnabledFor(logging.DEBUG):
-                 _log.debug(f"TRACE decorator._check_return_value: Coroutine inner type is Any. Skipping check.")
-             return result # Don't check if inner type is Any
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._check_return_value: Coroutine inner type is Any. Skipping check.")
+            return result # Don't check if inner type is Any
     # else: Not a coroutine hint, check_against_type remains effective_return_annotation
 
     if _log.isEnabledFor(logging.DEBUG):
          _log.debug(f"TRACE decorator._check_return_value: Final type check against: {check_against_type!r}")
+    ###-###
 
-    # --- Standard Return Value Check --- 
+    ### ----- Standard Return Value Check ----- ###
     match, obituary = check_type(result, check_against_type, globalns, effective_localns, instance_map=instance_map)
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator._check_return_value: check_type result: match={match}, details={obituary!r}")
@@ -685,6 +662,8 @@ def _check_return_value(
         _log.debug(f"TRACE decorator._check_return_value: Type check PASSED for return value of '{func_info['func_name']}'.")
         _log.debug(f"TRACE decorator._check_return_value: Exiting, returning original result.")
     return result
+    ###-###
+##-##
 
 ## ===== GENERATOR WRAPPERS ===== ##
 def _diecast_wrap_generator_sync(
@@ -747,85 +726,84 @@ def _diecast_wrap_generator_sync(
     gen_index = 0
     return_value_from_stop_iteration = None
 
-    try:
-        # Iterate through the generator
-        while True:
-            try:
-                # 1. Get the next value first
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Calling next(gen)")
-                value = next(gen)
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Received value index {gen_index}: {value!r}")
+    # Iterate through the generator
+    while True:
+        try:
+            # 1. Get the next value first
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Calling next(gen)")
+            value = next(gen)
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Received value index {gen_index}: {value!r}")
 
-                # 2. Check the yielded value *after* getting it, *before* yielding it
-                # Use the resolved effective_yield_type
-                if effective_yield_type is not Any:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Checking yielded value against {effective_yield_type!r}")
-                    effective_localns = (localns or {}).copy()
-                    effective_localns['_func_id'] = func_id
-                    match, obituary = check_type(value, effective_yield_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Yield]"], instance_map=instance_map)
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: check_type result for yield: match={match}, details={obituary!r}")
-                    if not match:
-                        # Raise the error HERE, before yielding the bad value
-                        _handle_type_error(
-                            error_type='yield',
-                            func_info=func_info,
-                            annotation=effective_yield_type, # What was checked against
-                            value=value,
-                            obituary=obituary,
-                            caller_depth=caller_depth_yield,
-                            is_yield_check=True,
-                            original_annotation=yield_type # The original TypeVar hint
-                        )
+            # 2. Check the yielded value *after* getting it, *before* yielding it
+            # Use the resolved effective_yield_type
+            if effective_yield_type is not Any:
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Checking yielded value against {effective_yield_type!r}")
+                effective_localns = (localns or {}).copy()
+                effective_localns['_func_id'] = func_id
+                match, obituary = check_type(value, effective_yield_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Yield]"], instance_map=instance_map)
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: check_type result for yield: match={match}, details={obituary!r}")
+                if not match:
+                    # Raise the error HERE, before yielding the bad value
+                    _handle_type_error(
+                        error_type='yield',
+                        func_info=func_info,
+                        annotation=effective_yield_type, # What was checked against
+                        value=value,
+                        obituary=obituary,
+                        caller_depth=caller_depth_yield,
+                        is_yield_check=True,
+                        original_annotation=yield_type # The original TypeVar hint
+                    )
 
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Yielding value: {value!r}")
-                gen_index += 1 # Increment the index after successful yield check
-                yield value
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Yielding value: {value!r}")
+            gen_index += 1 # Increment the index after successful yield check
+            yield value
 
-            except StopIteration as e:
-                # Generator finished, capture return value
-                return_value_from_stop_iteration = e.value
+        except StopIteration as e:
+            # Generator finished, capture return value
+            return_value_from_stop_iteration = e.value
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Caught StopIteration. Return value: {return_value_from_stop_iteration!r}")
+            # 4. Check return value type if needed (inside the StopIteration handler)
+            # Use the resolved effective_ret_type
+            if effective_ret_type is not Any:
                 if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Caught StopIteration. Return value: {return_value_from_stop_iteration!r}")
-                # 4. Check return value type if needed (inside the StopIteration handler)
-                # Use the resolved effective_ret_type
-                if effective_ret_type is not Any:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Checking return value against {effective_ret_type!r}")
-                    effective_localns = (localns or {}).copy()
-                    effective_localns['_func_id'] = func_id
-                    match, obituary = check_type(return_value_from_stop_iteration, effective_ret_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Return]"], instance_map=instance_map)
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: check_type result for return: match={match}, details={obituary!r}")
-                    if not match:
-                        _handle_type_error(
-                            error_type='return',
-                            func_info=func_info,
-                            annotation=effective_ret_type, # What was checked against
-                            value=return_value_from_stop_iteration,
-                            obituary=obituary,
-                            caller_depth=caller_depth_return,
-                            is_yield_check=False, # Explicitly False
-                            original_annotation=ret_type # The original TypeVar hint
-                        )
-                else:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Return type is Any. Skipping check.")
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Checking return value against {effective_ret_type!r}")
+                effective_localns = (localns or {}).copy()
+                effective_localns['_func_id'] = func_id
+                match, obituary = check_type(return_value_from_stop_iteration, effective_ret_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Return]"], instance_map=instance_map)
                 if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Breaking loop after StopIteration.")
-                return return_value_from_stop_iteration # Return value to signal completion
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: check_type result for return: match={match}, details={obituary!r}")
+                if not match:
+                    _handle_type_error(
+                        error_type='return',
+                        func_info=func_info,
+                        annotation=effective_ret_type, # What was checked against
+                        value=return_value_from_stop_iteration,
+                        obituary=obituary,
+                        caller_depth=caller_depth_return,
+                        is_yield_check=False, # Explicitly False
+                        original_annotation=ret_type # The original TypeVar hint
+                    )
+            else:
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Return type is Any. Skipping check.")
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Breaking loop after StopIteration.")
+            return return_value_from_stop_iteration # Return value to signal completion
 
-            # Handle exceptions propagated via throw()
-            except GeneratorExit as e:
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Caught GeneratorExit. Propagating exception.")
-                gen.close()
-                raise e
-            except Exception as e:
+        # Handle exceptions propagated via throw()
+        except GeneratorExit as e:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Caught GeneratorExit. Propagating exception.")
+            gen.close()
+            raise e
+        except Exception as e:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Caught unexpected exception. Propagating exception.")
                 try:
@@ -855,9 +833,9 @@ def _diecast_wrap_generator_sync(
                     if _log.isEnabledFor(logging.DEBUG):
                         _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Exception occurred inside generator during throw(): {e_inner_throw!r}")
                     raise e_inner_throw
-    finally:
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Exiting wrapper finally block.")
+        finally:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_sync: Exiting wrapper finally block.")
 
 async def _diecast_wrap_generator_async(
     agen: AsyncGenerator,
@@ -905,73 +883,72 @@ async def _diecast_wrap_generator_async(
 
     caller_depth_yield = 3 # wrapper -> anext(agen) -> yield -> user code -> user code's caller
     agen_index = 0
-    try:
-        while True:
+    while True:
+        try:
+            # 1. Get the next value first
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Calling anext(agen)")
+            value = await anext(agen)
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Received value index {agen_index}: {value!r}")
+
+            # 2. Check the yielded value *after* getting it, *before* yielding it
+            # Use the resolved effective_yield_type
+            if effective_yield_type is not Any:
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Checking yielded value against {effective_yield_type!r}")
+                effective_localns = (localns or {}).copy()
+                effective_localns['_func_id'] = func_id
+                match, obituary = check_type(value, effective_yield_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Yield]"], instance_map=instance_map)
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: check_type result: match={match}, details={obituary!r}")
+                if not match:
+                    # Raise the error HERE, before yielding the bad value
+                    _handle_type_error(
+                        error_type='yield',
+                        func_info=func_info,
+                        annotation=effective_yield_type, # What was checked against
+                        value=value,
+                        obituary=obituary,
+                        caller_depth=caller_depth_yield,
+                        is_yield_check=True,
+                        original_annotation=yield_type # The original TypeVar hint
+                    )
+            # 3. Yield the (now checked) value from this wrapper
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Yielding value: {value!r}")
+            agen_index += 1
+            yield value
+
+        except StopAsyncIteration:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught StopAsyncIteration. Generator finished normally.")
+            break # Exit the while loop
+
+        # Handle exceptions propagated via throw()
+        except GeneratorExit:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught GeneratorExit. Propagating exception.")
+            await agen.close()
+            raise
+
+        except Exception as e:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught unexpected exception. Propagating exception.")
             try:
-                # 1. Get the next value first
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Calling anext(agen)")
-                value = await anext(agen)
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Received value index {agen_index}: {value!r}")
-
-                # 2. Check the yielded value *after* getting it, *before* yielding it
-                # Use the resolved effective_yield_type
-                if effective_yield_type is not Any:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Checking yielded value against {effective_yield_type!r}")
-                    effective_localns = (localns or {}).copy()
-                    effective_localns['_func_id'] = func_id
-                    match, obituary = check_type(value, effective_yield_type, globalns, effective_localns, path=[f"{_RETURN_ANNOTATION}[Yield]"], instance_map=instance_map)
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_async: check_type result: match={match}, details={obituary!r}")
-                    if not match:
-                        # Raise the error HERE, before yielding the bad value
-                        _handle_type_error(
-                            error_type='yield',
-                            func_info=func_info,
-                            annotation=effective_yield_type, # What was checked against
-                            value=value,
-                            obituary=obituary,
-                            caller_depth=caller_depth_yield,
-                            is_yield_check=True,
-                            original_annotation=yield_type # The original TypeVar hint
-                        )
-                # 3. Yield the (now checked) value from this wrapper
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Yielding value: {value!r}")
-                agen_index += 1
-                yield value
-
+                await agen.athrow(e)
             except StopAsyncIteration:
                 if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught StopAsyncIteration. Generator finished normally.")
-                break # Exit the while loop
-
-            # Handle exceptions propagated via throw()
-            except GeneratorExit:
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught StopAsyncIteration after throw. Propagating exception.")
+                break
+            except Exception as e_inner_throw:
                 if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught GeneratorExit. Propagating exception.")
-                await agen.close()
-                raise
-
-            except Exception as e:
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught unexpected exception. Propagating exception.")
-                try:
-                    await agen.athrow(e)
-                except StopAsyncIteration:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Caught StopAsyncIteration after throw. Propagating exception.")
-                    break
-                except Exception as e_inner_throw:
-                    if _log.isEnabledFor(logging.DEBUG):
-                        _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Exception occurred inside generator during throw(): {e_inner_throw!r}")
-                    raise e_inner_throw
-    finally:
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Exiting wrapper finally block.")
-
+                    _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Exception occurred inside generator during throw(): {e_inner_throw!r}")
+                raise e_inner_throw
+        finally:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE decorator._diecast_wrap_generator_async: Exiting wrapper finally block.")
+##-##
 
 ## ===== CORE WRAPPERS ===== ##
 def _async_gen_caller_wrapper(
@@ -990,26 +967,10 @@ def _async_gen_caller_wrapper(
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE decorator._async_gen_caller_wrapper: Entering ASYNC GEN wrapper for func_id={func_id} ('{func_info['func_name']}')")
             _log.debug(f"TRACE decorator._async_gen_caller_wrapper: Args={args!r}, Kwargs={kwargs!r}")
-            # Removed problematic log part due to NameError: name 'cls' is not defined
-            # _log.debug(f"TRACE decorator._async_gen_caller_wrapper: Instance type: {cls}, Map exists on type: {hasattr(cls, '_diecast_type_map')}")
 
         # Define localns here, potentially capturing closure vars if needed later
         # For now, an empty dict suffices as TypeVars are handled via func_id
         localns = {}
-
-        # REMOVED redundant map retrieval - use passed instance_map directly
-        # instance_obj = None
-        # instance_map_retrieved = None
-        # first_param_name = next(iter(sig.parameters), None)
-        # if first_param_name is not None and first_param_name in _SELF_NAMES and args:
-        #     potential_instance = args[0]
-        #     if potential_instance is not None and not inspect.isclass(potential_instance):
-        #          instance_obj = potential_instance
-        #          cls = type(instance_obj)
-        #          # Removed log line that caused UnboundLocalError
-        #          instance_map_retrieved = getattr(cls, '_diecast_type_map', None)
-        #          if _log.isEnabledFor(logging.DEBUG):
-        #              _log.debug(f"TRACE decorator._async_gen_caller_wrapper: Retrieved instance_map: {instance_map_retrieved}")
 
         bound_args = None
         try:
@@ -1060,7 +1021,6 @@ def _async_gen_caller_wrapper(
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._async_gen_caller_wrapper: finally block in argument checker. Clearing bindings for base_func_id={func_id}")
             clear_typevar_bindings(func_id)
-
     return wrapper
 
 def _sync_wrapper(
@@ -1078,17 +1038,15 @@ def _sync_wrapper(
     def wrapper(*args, **kwargs):
         potential_instance = None # Initialize before conditional assignment
         if _log.isEnabledFor(logging.DEBUG):
-            # _log.debug(f"TRACE decorator._sync_wrapper: Instance type: {cls}, Map exists on type: {hasattr(cls, '_diecast_type_map')}")
             _log.debug(f"TRACE decorator._sync_wrapper: ENTERING for base_func_id={base_func_id} ('{func_info['func_name']}') with args={args!r}, kwargs={kwargs!r}")
 
         runtime_localns = {}
 
         bound_args = None
         result = None
-        try: # <<< START main try block
-            # --- Bind arguments and determine context ID --- #
+        try:
+            ### ----- Bind arguments and determine context ID ----- ###
             try:
-                # <<< FIX: Use sig.bind, not bind_partial, as defaults are applied later >>>
                 bound_args = sig.bind(*args, **kwargs)
                 bound_args.apply_defaults()
                 runtime_localns = bound_args.arguments.copy()
@@ -1099,17 +1057,18 @@ def _sync_wrapper(
             except TypeError as e:
                 _log.warning(f"TypeError binding arguments for {func_info['func_name']}: {e}")
                 raise # Re-raise binding errors
+            ###-###
 
-            # --- Check arguments, passing context_id --- #
+            ### ----- Check arguments, passing context_id ----- ###
             if any(p.annotation != inspect.Parameter.empty for p in sig.parameters.values()):
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._sync_wrapper: Calling _check_arguments with context_id={base_func_id}")
-                # <<< MODIFIED: Pass instance_map >>>
                 _check_arguments(sig, hints, bound_args, globalns, runtime_localns, func_info, base_func_id, instance_map=instance_map)
             elif _log.isEnabledFor(logging.DEBUG):
                  _log.debug(f"TRACE decorator._sync_wrapper: Skipping _check_arguments (no annotated parameters)")
+            ###-###
 
-            # --- Execute the original function --- #
+            ### ----- Execute the original function ----- ###
             try:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._sync_wrapper: Executing target_func: {func_info['func_name']}")
@@ -1118,15 +1077,14 @@ def _sync_wrapper(
                     _log.debug(f"TRACE decorator._sync_wrapper: target_func returned: {result!r}")
             except Exception as e:
                 _log.error(f"Exception during function execution '{func_info['func_name']}': {e!r}", exc_info=True)
-                # <<< REMOVE cleanup here, finally block will handle it >>>
                 raise
+            ###-###
 
-            # --- Check return value, passing context_id --- #
+            ### ----- Check return value, passing context_id ----- ###
             checked_result = result # Initialize with original result
             if _RETURN_ANNOTATION in hints:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._sync_wrapper: Calling _check_return_value with context_id={base_func_id}")
-                # <<< MODIFIED: Pass instance_map >>>
                 checked_result = _check_return_value(result, hints, globalns, runtime_localns, func_info, base_func_id, instance_map=instance_map)
                 # checked_result now holds original result or wrapped generator
                 if _log.isEnabledFor(logging.DEBUG):
@@ -1139,12 +1097,13 @@ def _sync_wrapper(
             return checked_result # Return the final (potentially wrapped) result
 
         finally:
-            # --- Clean up TypeVar bindings for this specific context --- #
+            ### ----- Clean up TypeVar bindings for this specific context ----- ###
             # Ensure context_id is resolved to base_func_id if it's a tuple
             final_context_id = base_func_id
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._sync_wrapper: MAIN finally block. Clearing bindings for ID={final_context_id}")
             clear_typevar_bindings(final_context_id) # Restore call
+            ###-###
 
     wrapper._diecast_id = base_func_id # Store base ID for potential identification
     return wrapper
@@ -1168,32 +1127,15 @@ def _async_wrapper(
 
         potential_instance = None # Initialize before conditional assignment
         runtime_localns = {}
-        # REMOVED redundant map retrieval - use passed instance_map directly
-        # instance_obj = None
-        # instance_map_retrieved = None
-        # first_param_name = next(iter(sig.parameters), None)
-        # if first_param_name is not None and first_param_name in _SELF_NAMES and args:
-        #     potential_instance = args[0]
-        #     if potential_instance is not None and not inspect.isclass(potential_instance):
-        #          instance_obj = potential_instance
-        #          cls = type(instance_obj)
-        #          _log.debug(f"TRACE decorator._async_wrapper: Instance type: {cls}, Map exists on type: {hasattr(cls, '_diecast_type_map')}")
-        #          instance_map_retrieved = getattr(cls, '_diecast_type_map', None)
-        #          if _log.isEnabledFor(logging.DEBUG):
-        #              _log.debug(f"TRACE decorator._async_wrapper: Retrieved instance_map: {instance_map_retrieved}")
 
         bound_args = None
         result = None
-        try: # <<< START main try block
-            # --- Bind arguments and determine context ID --- #
+        try:
+            ### ----- Bind arguments and determine context ID ----- ###
             try:
-                # <<< FIX: Use sig.bind, not bind_partial >>>
                 bound_args = sig.bind(*args, **kwargs)
                 bound_args.apply_defaults()
                 runtime_localns = bound_args.arguments.copy()
-
-                # <<< REMOVED instance-specific context_id logic >>>
-                # ... existing logging ...
 
                 if _log.isEnabledFor(logging.DEBUG):
                      _log.debug(f"TRACE decorator._async_wrapper: Bound arguments: {bound_args.arguments!r}")
@@ -1201,17 +1143,18 @@ def _async_wrapper(
             except TypeError as e:
                 _log.warning(f"TypeError binding arguments for {func_info['func_name']}: {e}")
                 raise
+            ###-###
 
-            # --- Check arguments, passing context_id --- #
+            ### ----- Check arguments, passing context_id ----- ###
             if any(p.annotation != inspect.Parameter.empty for p in sig.parameters.values()):
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._async_wrapper: Calling _check_arguments with context_id={base_func_id}")
-                # <<< MODIFIED: Pass instance_map >>>
                 _check_arguments(sig, hints, bound_args, globalns, runtime_localns, func_info, base_func_id, instance_map=instance_map)
             elif _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._async_wrapper: Skipping _check_arguments (no annotated parameters)")
+            ###-###
 
-            # --- Execute the original async function --- #
+            ### ----- Execute the original async function ----- ###
             try:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE decorator._async_wrapper: Executing target_func: {func_info['func_name']}")
@@ -1220,10 +1163,10 @@ def _async_wrapper(
                     _log.debug(f"TRACE decorator._async_wrapper: target_func returned: {result!r}")
             except Exception as e:
                 _log.error(f"Exception during async function execution '{func_info['func_name']}': {e!r}", exc_info=True)
-                # <<< REMOVE cleanup here, finally block will handle it >>>
                 raise
+            ###-###
 
-            # --- Check return value, passing context_id --- #
+            ### ----- Check return value, passing context_id ----- ###
             checked_result = result # Initialize
             if _RETURN_ANNOTATION in hints:
                 if _log.isEnabledFor(logging.DEBUG):
@@ -1238,8 +1181,9 @@ def _async_wrapper(
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE decorator._async_wrapper: EXITING NORMALLY for context_id={base_func_id}")
             return checked_result
+            ###-###
 
-        finally: # <<< ADD correctly placed finally block
+        finally:
             # --- Clean up TypeVar bindings for this specific context --- #
             # Ensure context_id is resolved to base_func_id if it's a tuple
             final_context_id = base_func_id
@@ -1249,6 +1193,7 @@ def _async_wrapper(
 
     wrapper._diecast_id = base_func_id # Store base ID
     return wrapper
+##-##
 
 ## ===== CLASS DECORATION LOGIC ===== ##
 def _apply_diecast_to_method(
@@ -1403,13 +1348,9 @@ def _apply_diecast_to_method(
     except Exception as e:
         _log.error(f"Failed to set wrapped method '{name}' on class {cls_name}: {e!r}", exc_info=True)
         # Decide whether to raise or just log
+##-##
 
 ## ===== CORE DECORATOR LOGIC ===== ##
-# @typing.overload
-# def diecast(func: Callable[P, R]) -> Callable[P, R]: ... # Overload for functions
-# @typing.overload
-# def diecast(cls: Type[T]) -> Type[T]: ... # Overload for classes
-
 def diecast(obj: Union[Callable, Type]) -> Union[Callable, Type]:
     """Applies runtime type checking to a function, method, or class.
 
@@ -1530,7 +1471,7 @@ def diecast(obj: Union[Callable, Type]) -> Union[Callable, Type]:
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE decorator.diecast: Finished wrapping function/method '{func_info['func_name']}'. Returning final wrapper.")
     return final_wrapper # Return the potentially re-decorated final wrapper
-
+##-##
 
 ## ===== IGNORE DECORATOR ===== ##
 def ignore(func_or_cls: Callable) -> Callable:
@@ -1558,6 +1499,7 @@ def ignore(func_or_cls: Callable) -> Callable:
             _log.debug(f"TRACE decorator.ignore: Set {_DIECAST_MARKER}=True for function '{func_name}'.")
             _log.debug(f"TRACE decorator.ignore: Exiting, returning original function.")
     return func_or_cls
+##-##
 
 ## ===== INTERNAL HELPERS ===== ##
 def _decorate_class(cls: Type) -> Type: # RENAMED function
@@ -1573,7 +1515,7 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
     if hasattr(cls, "__parameters__") and cls.__parameters__:
         _log.debug(f"Class {cls.__name__} is Generic. Decorating methods.")
 
-        # --- Capture original __class_getitem__ before overwriting ---
+        ### ----- Capture original __class_getitem__ before overwriting ----- ###
         original_getitem = getattr(cls, '__class_getitem__', None)
         _log.debug(f"TRACE _decorate_class: Captured original __class_getitem__: {original_getitem!r}")
         if original_getitem is None:
@@ -1597,8 +1539,9 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
                      from typing import _GenericAlias
                      return _GenericAlias(cls, key)
                  original_getitem = _legacy_fallback_getitem
+        ###-###
                  
-        # --- Start of injected __class_getitem__ --- #
+        ### ----- Define and inject DieCast __class_getitem__ ----- ###
         @classmethod
         def __class_getitem__(cls_arg, key): # Use cls_arg to avoid clash with outer cls
             """Dynamically create and cache specialized subclass with type map."""
@@ -1609,20 +1552,11 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
             with _SPECIALIZED_CLASS_CACHE_LOCK:
                 cached_class = _SPECIALIZED_CLASS_CACHE.get(cache_key)
             if cached_class:
-                # _log.debug(f"Cache hit for specialized class: {cls_arg.__name__}[{key!r}]") # TEMP COMMENT
-                # _log.debug(f"DIECAST_GENERIC: Cache HIT for {cls_arg.__name__}[{key!r}]. Returning {cached_class.__name__}") # TEMP COMMENT
-                # !!! REMOVED DEBUG LOG !!!
-                # _log.critical(f"!!! __class_getitem__: CACHE HIT. Returning cached specialized class: {cached_class.__name__} !!!")
                 return cached_class
-
-            # _log.debug(f"DIECAST_GENERIC: Cache MISS for {cls_arg.__name__}[{key!r}]. Creating new specialized class.") # TEMP COMMENT
-            # _log.debug(f"Cache miss. Creating specialized class: {cls_arg.__name__}[{key!r}]") # TEMP COMMENT
 
             # Call original __class_getitem__ (captured above)
             try:
-                # _log.debug(f"DIECAST_GENERIC: Calling original_getitem({key!r})") # TEMP COMMENT
                 base_specialized_type = original_getitem(key)
-                # _log.debug(f"DIECAST_GENERIC: Original getitem returned: {base_specialized_type!r}") # TEMP COMMENT
             except TypeError as e:
                 _log.error(f"Error calling original __class_getitem__ for {cls_arg.__name__} with key {key!r}: {e}")
                 raise
@@ -1739,8 +1673,7 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
                 _log.debug(f"TRACE decorator.py _decorate_class.__class_getitem__: Successfully cached specialized class {specialized_name}")
 
             return specialized_subclass
-        # Marker removed from function object, will be set on class instead
-        # --- End of injected __class_getitem__ --- #
+        ###-###
 
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE _decorate_class: Setting wrapped __class_getitem__ on {cls.__name__}")
@@ -1773,26 +1706,9 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
             if getattr(target_func, _DIECAST_MARKER, False):
                 _log.debug(f"TRACE _decorate_class: Skipping method '{name}' in non-generic class {cls.__name__} (marked with _DIECAST_MARKER)")
                 continue
-            # --- ADDED: Skip abstract methods ---
             if getattr(target_func, '__isabstractmethod__', False):
                 _log.debug(f"TRACE _decorate_class: Skipping abstract method '{name}' in non-generic class {cls.__name__}")
                 continue
-            # --- END ADDED ---
-            # --- ADDED: Skip abstract methods ---
-            if getattr(target_func, '__isabstractmethod__', False):
-                _log.debug(f"TRACE _decorate_class: Skipping abstract method '{name}' in non-generic class {cls.__name__}")
-                continue
-            # --- END ADDED ---
-            # --- ADDED: Skip abstract methods ---
-            if getattr(target_func, '__isabstractmethod__', False):
-                _log.debug(f"TRACE _decorate_class: Skipping abstract method '{name}' in non-generic class {cls.__name__}")
-                continue
-            # --- END ADDED ---
-            # --- ADDED: Skip abstract methods ---
-            if getattr(target_func, '__isabstractmethod__', False):
-                _log.debug(f"TRACE _decorate_class: Skipping abstract method '{name}' in non-generic class {cls.__name__}")
-                continue
-            # --- END ADDED ---
 
             # Check if the method has any type hints (no point wrapping if not)
             try:
@@ -1817,3 +1733,5 @@ def _decorate_class(cls: Type) -> Type: # RENAMED function
 
     _log.debug(f"TRACE decorator._decorate_class: Exiting for class '{cls.__name__}'")
     return cls
+##-##
+#-#
