@@ -1,23 +1,26 @@
-import pytest
-import logging
-import diecast.logging
-from diecast.type_utils import _check_type_cache_obituary, _mro_cache, _TYPEVAR_BINDINGS
-import sys
-import os
 import importlib
 import tempfile
 import textwrap
+import logging
+import pytest
 import shutil
+import sys
+import os
 import gc
+
+from src.diecast.type_utils import _check_type_cache_obituary, _mro_cache, _TYPEVAR_BINDINGS
+from src.diecast.decorator import _SPECIALIZED_CLASS_CACHE
+
 
 @pytest.fixture(scope="function", autouse=True)
 def configure_diecast_logging():
     """Ensures all logs are visible during test runs by setting the diecast logger level to debug."""
     # Get the diecast logger directly and set its level to DEBUG
-    diecast.logging.set_verbosity(logging.DEBUG)
-    
-    # The rest is handled by pytest's log capture based on our pyproject.toml config
-    yield 
+    # diecast.logging.set_verbosity(logging.DEBUG) # REMOVE THIS LINE - set_verbosity is gone as per spec.
+    # If basic logging visibility is still desired for tests *without* depending on diecast internals:
+    # logging.getLogger('diecast').setLevel(logging.DEBUG)
+    # logging.basicConfig() # Ensure handlers are set up if not done elsewhere
+    pass # For now, let's just remove the offending line. We can refine test logging later if needed.
 
 # ADD FIXTURE to clear caches before each test
 @pytest.fixture(scope="function", autouse=True)
@@ -25,7 +28,21 @@ def clear_caches():
     """Clears internal caches before each test function runs."""
     _check_type_cache_obituary.clear()
     _mro_cache.clear() # Also clear the MRO cache
-    _TYPEVAR_BINDINGS.clear() # Also clear TypeVar bindings
+    logging.warning(f"[clear_caches] Before clear: _TYPEVAR_BINDINGS = {dict(_TYPEVAR_BINDINGS)}") # Convert to dict for logging
+    _SPECIALIZED_CLASS_CACHE.clear()
+    logging.warning(f"[clear_caches] Before clear: _TYPEVAR_BINDINGS = {dict(_TYPEVAR_BINDINGS)}") # Convert to dict for logging
+    # _TYPEVAR_BINDINGS.clear() # ERROR: threading.local has no clear method
+    # Instead, clear all attributes set on the thread-local object
+    if hasattr(_TYPEVAR_BINDINGS, '__dict__'):
+        attrs_to_delete = list(_TYPEVAR_BINDINGS.__dict__.keys())
+        for attr in attrs_to_delete:
+            try:
+                delattr(_TYPEVAR_BINDINGS, attr)
+            except AttributeError:
+                logging.warning(f"[clear_caches] After clear attempt: _TYPEVAR_BINDINGS = {dict(_TYPEVAR_BINDINGS)}") # Convert to dict for logging
+                pass # Might have been deleted by another thread concurrently, ignore
+
+    logging.warning(f"[clear_caches] After clear attempt: _TYPEVAR_BINDINGS = {dict(_TYPEVAR_BINDINGS)}") # Convert to dict for logging
     yield # Test runs here
 
 # --- Helper: Strip ANSI Codes (String Ops) ---
@@ -55,8 +72,9 @@ def strip_ansi(text: str) -> str:
 @pytest.fixture(scope="function") # Use function scope for isolation
 def temp_module():
     temp_dir = tempfile.mkdtemp()
-    sys.path.insert(0, temp_dir)
-    
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../src'))
+    sys.path.insert(0, temp_dir) # Add temp dir first
+    sys.path.insert(1, src_dir) # Add src dir second
     module_files = {}
     imported_modules = []
 
@@ -113,19 +131,13 @@ def temp_module():
             except KeyError:
                 pass
 
-    # Remove temp directory from sys.path
-    try:
-        # Ensure the path is actually the one we added
-        if sys.path[0] == temp_dir:
-             sys.path.pop(0)
-        else:
-             # Try removing it if it's elsewhere (less ideal)
-             try:
-                 sys.path.remove(temp_dir)
-             except ValueError:
-                 pass # Not found, maybe already removed
-    except (IndexError):
-        pass # sys.path was empty
+    # Remove added paths from sys.path (in reverse order of insertion)
+    paths_to_remove = {temp_dir, src_dir}
+    original_sys_path = sys.path[:] # Copy for safe iteration
+    sys.path.clear()
+    for p in original_sys_path:
+        if p not in paths_to_remove:
+            sys.path.append(p)
 
     # Clean up any temporary files created
     try:

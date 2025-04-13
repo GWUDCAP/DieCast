@@ -59,11 +59,10 @@ Version Management:
 
 # ===== IMPORTS ===== #
 
-## ===== LOCAL IMPORTS ===== ##
-from .logging import set_verbosity, _log
+## ===== LOCAL ===== ##
+from .logging import _log
 from .decorator import diecast, ignore
 from .mold import mold
-
 
 # ===== GLOBALS ===== #
 
@@ -86,10 +85,7 @@ __all__ = [
     'mold',         # Function to apply type checking to a module
 ]
 
-# Configuration functions
-__all__.extend([
-    'set_verbosity', # Function to control logging verbosity
-])
+# Configuration functions (set_verbosity removed from public API)
 
 # Debugging utilities
 __all__.append('logger')  # Logger instance for debugging (points to _log)

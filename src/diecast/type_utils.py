@@ -61,12 +61,16 @@ from .error_utils import (
     _construct_type_error, 
     _get_caller_info, 
     _format_path, 
-    YouDiedError, 
     Obituary
 )
 
 # ===== GLOBALS ===== #
-
+class YouDiedError(TypeError):
+    """Custom TypeError raised when a DieCast runtime type check fails."""
+    def __init__(self, message: str, obituary: Optional[Obituary] = None, cause: Optional[str] = 'unknown'):
+        super().__init__(message)
+        self.obituary = obituary
+        self.cause = cause
 ## ===== TYPE ALIASES ===== ##
 NoneType: Final[Type[None]] = type(None)
 
@@ -81,7 +85,8 @@ _mro_cache_lock = threading.Lock() # Thread safety for MRO cache
 ## ===== CHECK_TYPE CACHE ===== ##
 # Global cache for TypeVar bindings within a specific function call context
 # Maps (func_id, TypeVar) -> concrete_type
-_TYPEVAR_BINDINGS: Dict[Tuple[int, TypeVar], type] = {}
+# REPLACED threading.local with a standard dict and lock
+_TYPEVAR_BINDINGS: Dict[Tuple[int, TypeVar], Type] = {}
 _typevar_bindings_lock = threading.Lock() # Thread safety for bindings
 
 ## ===== OBITUARY CACHE ===== ##
@@ -198,66 +203,53 @@ def is_instance_optimized(value: Any, expected_type: Type) -> bool:
             return False
 
 ## ===== TYPEVAR HANDLING ===== ##
-def bind_typevar(func_id: int, typevar: TypeVar, concrete_type: Any) -> None:
-    """Bind a TypeVar to a concrete type for the duration of a function call.
-
-    Used to enforce consistency within a single function execution context.
-
-    Args:
-        func_id: The unique ID of the function execution context (e.g., id(wrapper)).
-        typevar: The TypeVar instance to bind.
-        concrete_type: The concrete type to bind the TypeVar to.
-    """
+def bind_typevar(func_id: int, typevar: TypeVar, type_val: Type) -> None:
+    """Bind a TypeVar to a concrete type within a specific function call context."""
+    # SIMPLIFIED: Use a standard dictionary with a lock
+    key = (func_id, typevar)
     with _typevar_bindings_lock:
-        if func_id not in _TYPEVAR_BINDINGS:
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils.bind_typevar: Creating new binding dict for func_id={func_id}")
-            _TYPEVAR_BINDINGS[func_id] = {}
+        _TYPEVAR_BINDINGS[key] = type_val
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE type_utils.bind_typevar [ID:{func_id}]: Bound {typevar!r} -> {type_val!r}")
 
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils.bind_typevar [func_id={func_id}]: Binding {typevar!r} -> {concrete_type!r}")
-        _TYPEVAR_BINDINGS[func_id][typevar] = concrete_type
-
-def get_typevar_binding(func_id: int, typevar: TypeVar) -> Optional[Any]:
-    """Get the concrete type that a TypeVar is bound to for a function call.
-
-    Args:
-        func_id: The unique ID of the function execution context.
-        typevar: The TypeVar instance to look up.
-
-    Returns:
-        The concrete type the TypeVar is bound to, or None if not bound in this context.
-    """
+def get_typevar_binding(func_id: int, typevar: TypeVar) -> Optional[Type]:
+    """Retrieve the concrete type bound to a TypeVar for a function call context."""
+    # SIMPLIFIED: Use a standard dictionary with a lock
+    key = (func_id, typevar)
     with _typevar_bindings_lock:
-        bindings = _TYPEVAR_BINDINGS.get(func_id, {})
-        bound_type = bindings.get(typevar)
-        if _log.isEnabledFor(logging.DEBUG):
-            if bound_type is not None:
-                _log.debug(f"TRACE type_utils.get_typevar_binding [func_id={func_id}]: Found binding for {typevar!r}: {bound_type!r}")
-            else:
-                _log.debug(f"TRACE type_utils.get_typevar_binding [func_id={func_id}]: No binding found for {typevar!r}")
-        return bound_type
+        result = _TYPEVAR_BINDINGS.get(key)
+    if _log.isEnabledFor(logging.DEBUG):
+        log_msg = f"TRACE type_utils.get_typevar_binding [ID:{func_id}]: Retrieving binding for {typevar!r}. Found: {result!r}"
+        if result is None:
+            log_msg += " (Key not found in _TYPEVAR_BINDINGS)"
+        _log.debug(log_msg)
+    return result
 
 def clear_typevar_bindings(func_id: int) -> None:
-    """Clear all TypeVar bindings for a function context when it completes.
-
-    Args:
-        func_id: The unique ID of the function execution context to clear bindings for.
-    """
-    if _log.isEnabledFor(logging.DEBUG):
-        _log.debug(f"TRACE type_utils.clear_typevar_bindings: Entering for func_id={func_id}")
+    """Clear all TypeVar bindings associated with a specific function ID."""
+    # SIMPLIFIED: Use a standard dictionary with a lock
+    # This is less efficient than the thread.local approach if many func_ids exist simultaneously,
+    # but much simpler and likely sufficient.
+    keys_to_remove = []
     with _typevar_bindings_lock:
-        if func_id in _TYPEVAR_BINDINGS:
-            if _log.isEnabledFor(logging.DEBUG):
-                bindings = _TYPEVAR_BINDINGS[func_id]
-                _log.debug(f"TRACE type_utils.clear_typevar_bindings [func_id={func_id}]: Clearing bindings: {bindings!r}")
-            del _TYPEVAR_BINDINGS[func_id]
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils.clear_typevar_bindings [func_id={func_id}]: Bindings cleared.")
-        else:
-            _log.debug(f"TRACE type_utils.clear_typevar_bindings [func_id={func_id}]: No bindings found to clear.")
+        # Find keys associated with the func_id
+        for key in _TYPEVAR_BINDINGS:
+            if key[0] == func_id:
+                keys_to_remove.append(key)
+        
+        # Remove the keys
+        removed_count = 0
+        for key in keys_to_remove:
+            # Check if key still exists (might have been removed by another thread between iterations)
+            if key in _TYPEVAR_BINDINGS:
+                 del _TYPEVAR_BINDINGS[key]
+                 removed_count += 1
+
     if _log.isEnabledFor(logging.DEBUG):
-        _log.debug(f"TRACE type_utils.clear_typevar_bindings: Exiting for func_id={func_id}")
+        if removed_count > 0:
+            _log.debug(f"TRACE type_utils.clear_typevar_bindings [ID:{func_id}]: Cleared {removed_count} binding(s).")
+        else:
+            _log.debug(f"TRACE type_utils.clear_typevar_bindings [ID:{func_id}]: No bindings found to clear.")
 
 ## ===== TYPE INTROSPECTION ===== ##
 def get_origin(tp: Any) -> Optional[Any]:
@@ -395,7 +387,7 @@ def resolve_forward_ref(ref: Union[str, ForwardRef], globalns: Dict[str, Any], l
         if hasattr(ForwardRef, '_evaluate'):
             _log.debug("TRACE type_utils.resolve_forward_ref: Using ForwardRef._evaluate")
             # The _evaluate method itself is potentially slow
-            resolved_type = ForwardRef(ref_str)._evaluate(globalns, localns or {}, frozenset()) # Pass empty dict if localns is None
+            resolved_type = ForwardRef(ref_str)._evaluate(globalns, localns or {}, recursive_guard=frozenset()) # Pass empty dict if localns is None
         else:
             # Fallback for older versions (eval is necessary here and slow)
             _log.debug("TRACE type_utils.resolve_forward_ref: Using eval() fallback")
@@ -429,32 +421,11 @@ def get_resolved_type_hints(obj: Callable, globalns: Optional[Dict[str, Any]] = 
     try:
         # --- Primary Strategy: Attempt full resolution --- 
         # Determine appropriate namespaces if not provided
+        # SIMPLIFIED: Rely more on get_type_hints default behavior for namespaces
         obj_globalns = getattr(obj, '__globals__', {}) if globalns is None else globalns
-        # Determine localns more carefully
-        effective_localns = localns
-        if localns is None:
-            # Try to get class namespace for methods
-            if inspect.ismethod(obj):
-                bound_instance = getattr(obj, '__self__', None)
-                if bound_instance is not None:
-                    cls = bound_instance if isinstance(bound_instance, type) else type(bound_instance)
-                    try:
-                        effective_localns = dict(vars(cls)) # May fail for some builtins
-                        if _log.isEnabledFor(logging.DEBUG):
-                            _log.debug(f"TRACE type_utils.get_resolved_type_hints: Using class dict for localns: {list(effective_localns.keys())!r}")
-                    except TypeError:
-                        if _log.isEnabledFor(logging.DEBUG):
-                            _log.debug(f"TRACE type_utils.get_resolved_type_hints: Could not get vars(cls) for method localns.")
-                        effective_localns = None # Fallback if vars() fails
-            # Keep effective_localns as None if not a method or class dict failed
-            if effective_localns is None:
-                if _log.isEnabledFor(logging.DEBUG):
-                    _log.debug("TRACE type_utils.get_resolved_type_hints: effective_localns remains None.")
-                pass # Keep it None
-        else:
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug("TRACE type_utils.get_resolved_type_hints: Using provided localns.")
-            pass
+        effective_localns = localns # Use provided localns if available, otherwise None (let get_type_hints handle it)
+        if _log.isEnabledFor(logging.DEBUG):
+          _log.debug(f"TRACE type_utils.get_resolved_type_hints: Using provided globalns (keys={list(obj_globalns.keys())!r}) and localns (keys={(list(effective_localns.keys()) if effective_localns else None)!r})")
 
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils.get_resolved_type_hints: Calling get_type_hints with globalns keys={list(obj_globalns.keys())!r}, localns keys={(list(effective_localns.keys()) if effective_localns else None)!r}")
@@ -524,7 +495,7 @@ def format_type_for_display(tp: Any) -> str:
     # Most operations are simple lookups/checks, but string formatting
     # and recursion add overhead. Using @lru_cache helps a lot.
     if tp is Any: return "Any"
-    if tp is NoneType: return "None"
+    if tp is NoneType: return "NoneType"
     if isinstance(tp, TypeVar): return str(tp) # e.g., "~T"
     if isinstance(tp, ForwardRef): 
         result = tp.__forward_arg__
@@ -669,7 +640,9 @@ def _check_none(value: Any, expected_type: Any, path: List[Union[str, int]]) -> 
         if value is None:
             return True, None
         else:
-            obituary = _create_obituary("NoneType", value, path, "Expected None")
+            # FIX: Pass formatted type string for received_repr
+            received_repr = format_type_for_display(type(value))
+            obituary = _create_obituary("NoneType", received_repr, value, path, "Expected None")
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE type_utils._check_none: Fail (Expected None, got {type(value).__name__}). Details: {obituary!r}")
             return False, obituary
@@ -682,7 +655,8 @@ def _check_optional(
     opt_inner: Any,
     globalns: Dict,
     localns: Optional[Dict],
-    path: List[Union[str, int]]
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
 ) -> Tuple[bool, Optional[Obituary]]:
     """Handle Optional[X] type."""
     # Called directly from check_type if is_optional_type is true.
@@ -701,7 +675,7 @@ def _check_optional(
 
     # Recursive call
     # Performance guard: Recursive call
-    match, details_obj = check_type(value, opt_inner, globalns, localns, path) # Renamed details -> details_obj
+    match, details_obj = check_type(value, opt_inner, globalns, localns, path, instance_map=instance_map) # Renamed details -> details_obj
 
     if match:
         if _log.isEnabledFor(logging.DEBUG):
@@ -811,7 +785,14 @@ def _check_literal(value: Any, expected_type: Any, path: List[Union[str, int]]) 
     # Return None (not a tuple!) when not handling this type
     return None
 
-def _check_final(value: Any, expected_type: Any, globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Optional[Tuple[bool, Optional[Obituary]]]:
+def _check_final(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Optional[Tuple[bool, Optional[Obituary]]]:
     """Handle `typing.Final[X]` checks. Checks against the inner type X."""
     # No entry log, simple check
     if hasattr(typing, 'Final') and get_origin(expected_type) is Final:
@@ -825,7 +806,8 @@ def _check_final(value: Any, expected_type: Any, globalns: Dict, localns: Option
         # Recursively check the inner type
         if _log.isEnabledFor(logging.DEBUG):
              _log.debug(f"TRACE type_utils._check_final: Checking inner type {inner_type!r}")
-        match, details_obj = check_type(value, inner_type, globalns, localns, path) # Rename
+        # Pass instance_map down
+        match, details_obj = check_type(value, inner_type, globalns, localns, path, instance_map=instance_map) # Rename
 
         if not match:
             # Always create a new Obituary for the Final failure
@@ -836,22 +818,14 @@ def _check_final(value: Any, expected_type: Any, globalns: Dict, localns: Option
             if details_obj and details_obj.message:
                 fail_msg += f": {details_obj.message}"
 
-            # Use the correct _create_obituary signature
-            received_repr = format_type_for_display(type(value))
-            final_obituary = _create_obituary(
-                expected_repr,    # Correct Positional: expected_repr
-                received_repr,    # Correct Positional: received_repr
-                value,            # Correct Positional: value
-                path,             # Correct Positional: path
-                fail_msg          # Correct Positional: message
-            )
+            # Inner check failed, propagate the original Obituary
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_final: Fail (Inner check failed). Details: {final_obituary!r}")
-            return False, final_obituary
+                 _log.debug(f"TRACE type_utils._check_final: Fail (Inner check failed). Propagating details: {details_obj!r}")
+            return False, details_obj
 
         # Inner type matched
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_final: Match (Inner check passed).") # Too verbose
+            _log.debug(f"TRACE type_utils._check_final: Match (Inner check passed).")
         return True, None
 
     # Not a Final type, return None.
@@ -859,7 +833,14 @@ def _check_final(value: Any, expected_type: Any, globalns: Dict, localns: Option
         _log.debug("TRACE type_utils._check_final: Not a Final type. Returning None as unhandled.")
     return None # Reverted: Indicate not handled
 
-def _check_newtype(value: Any, expected_type: Any, globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Optional[Tuple[bool, Optional[Obituary]]]:
+def _check_newtype(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Optional[Tuple[bool, Optional[Obituary]]]:
     """Handle `NewType('Name', BaseType)` checks. Checks against the BaseType."""
     # No entry log, simple check
     if hasattr(expected_type, '__supertype__'):  # NewType instances have __supertype__
@@ -867,7 +848,8 @@ def _check_newtype(value: Any, expected_type: Any, globalns: Dict, localns: Opti
         if _log.isEnabledFor(logging.DEBUG):
              _log.debug(f"TRACE type_utils._check_newtype: Found NewType. Checking supertype {supertype!r}")
         # Recursively check the supertype
-        match, details_obj = check_type(value, supertype, globalns, localns, path) # Rename
+        # Pass instance_map down
+        match, details_obj = check_type(value, supertype, globalns, localns, path, instance_map=instance_map) # Rename
         if not match:
             # Always create a new Obituary for the NewType failure
             newtype_name = getattr(expected_type, '__name__', 'NewType')
@@ -881,7 +863,7 @@ def _check_newtype(value: Any, expected_type: Any, globalns: Dict, localns: Opti
             # Use the correct _create_obituary signature
             received_repr = format_type_for_display(type(value))
             final_obituary = _create_obituary(
-                expected_repr,
+                supertype_repr, # Use the supertype representation for the expected value
                 received_repr,
                 value,
                 path,
@@ -914,7 +896,9 @@ def _check_protocol(value: Any, expected_type: Any, path: List[Union[str, int]])
         _log.debug(f"TRACE type_utils._check_protocol: Checking value {value!r} against protocol {expected_repr}")
 
     # Lazily create fail details
-    fail_obituary = lambda msg: _create_obituary(expected_repr, value, path, msg)
+    # FIX: Ensure received_repr is formatted type string in lambda
+    received_repr_proto = format_type_for_display(type(value))
+    fail_obituary = lambda msg: _create_obituary(expected_repr, received_repr_proto, value, path, msg)
 
     # If the protocol is runtime_checkable, isinstance should work
     is_runtime = getattr(expected_type, '_is_runtime_protocol', False)
@@ -950,11 +934,18 @@ def _check_protocol(value: Any, expected_type: Any, path: List[Union[str, int]])
         protocol_members = get_resolved_type_hints(expected_type, include_extras=True)
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_protocol: Protocol members: {protocol_members!r}")
-        if not protocol_members: # If no members defined, any object technically conforms
+        if not protocol_members: # If no members defined, we need special handling
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_protocol: Protocol {expected_repr} has no members defined. Match.")
-                # However, require Protocol definition itself as minimal check
-            # This was already checked at the start, so we can return True
+                _log.debug(f"TRACE type_utils._check_protocol: Protocol {expected_repr} has no members defined.")
+            
+            # Special handling for built-in types like int, str, etc.
+            if expected_type in (int, str, float, bool, list, dict, tuple, set):
+                if not isinstance(value, expected_type):
+                    if _log.isEnabledFor(logging.DEBUG):
+                        _log.debug(f"TRACE type_utils._check_protocol: Value is not an instance of expected type {expected_repr}")
+                    return False, fail_obituary("Value is not an instance of expected type")
+            
+            # For other protocol types with no members, any object technically conforms
             return True, None
 
         missing_members = []
@@ -980,7 +971,100 @@ def _check_protocol(value: Any, expected_type: Any, path: List[Union[str, int]])
             _log.warning(f"Error during structural protocol check for {expected_type!r}: {e}", exc_info=True)
         return False, fail_obituary("Protocol check failed due to internal error")
 
-def _check_union(value: Any, expected_type: Any, globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Optional[Tuple[bool, Optional[Obituary]]]:
+
+def _check_dataclass(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Optional[Tuple[bool, Optional[Obituary]]]:
+    """Handle dataclass type checks."""
+    # Check if it's actually a dataclass type hint
+    if not dataclasses.is_dataclass(expected_type) or not isinstance(expected_type, type):
+        return None # Not handled by this checker
+
+    path_repr = _format_path(path)
+    expected_repr = format_type_for_display(expected_type)
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE type_utils._check_dataclass: Entering. Value=<{type(value).__name__}>, Expected={expected_repr}, Path='{path_repr}'")
+
+    # 1. Check if the value is an instance of the dataclass type itself
+    if not isinstance(value, expected_type):
+        received_repr = format_type_for_display(type(value))
+        obituary = _create_obituary(
+            expected_repr,
+            received_repr,
+            value,
+            path,
+            f"Value is not an instance of dataclass {expected_repr}"
+        )
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE type_utils._check_dataclass: Fail (Not an instance). Details: {obituary!r}")
+        return False, obituary
+
+    # 2. Recursively check each field
+    fields = dataclasses.fields(expected_type)
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE type_utils._check_dataclass: Checking {len(fields)} fields for dataclass {expected_repr}. Path='{path_repr}'")
+
+    for field in fields:
+        field_name = field.name
+        field_type = field.type
+        field_path = path + [field_name]
+        field_path_repr = _format_path(field_path)
+        field_type_repr = format_type_for_display(field_type)
+
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE type_utils._check_dataclass: Checking field '{field_name}' (Type: {field_type_repr}), Path='{field_path_repr}'")
+
+        try:
+            field_value = getattr(value, field_name)
+        except AttributeError:
+            # Field is missing on the value instance
+            received_repr = format_type_for_display(type(value)) # Type of the container
+            obituary = _create_obituary(
+                expected_repr=field_type_repr, # Expected type of the field
+                received_repr="AttributeError", # Indicate the error type
+                value=None, # Value is missing
+                path=field_path, # Path to the missing field
+                message=f"Dataclass instance is missing field '{field_name}'"
+            )
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_dataclass: Fail (AttributeError for field '{field_name}'). Details: {obituary!r}")
+            return False, obituary
+
+        # Recursively check the field's value against the field's type
+        match, details_obj = check_type(
+            field_value, field_type, globalns, localns, field_path, instance_map=instance_map
+        )
+
+        if not match:
+            # Field check failed, return the failure details immediately
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_dataclass: Fail (Field '{field_name}' check failed). Returning inner details: {details_obj!r}")
+            # Return the obituary from the inner check
+            return False, details_obj
+        else:
+             if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_dataclass: Field '{field_name}' matched.")
+
+
+    # All fields passed
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE type_utils._check_dataclass: Match (All fields passed for dataclass {expected_repr}). Path='{path_repr}'")
+    return True, None
+
+
+def _check_union(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Optional[Tuple[bool, Optional[Obituary]]]:
     """Handle `typing.Union` checks (including Optionals handled by caller)."""
     func_id = localns.get("_func_id", "unknown") if localns else "unknown"
     is_union, union_args = is_union_type(expected_type)
@@ -1015,7 +1099,8 @@ def _check_union(value: Any, expected_type: Any, globalns: Dict, localns: Option
         # Performance guard: Recursive call can be expensive
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_union [ID:{func_id}]: Recursive call: check_type({value!r}, {member_repr}, ...)")
-        match, details_obj = check_type(value, member_type, globalns, localns, path) # Ignore details from inner check for now
+        # Pass instance_map down
+        match, details_obj = check_type(value, member_type, globalns, localns, path, instance_map=instance_map)
 
         # --- ADDED: Detailed log after recursive call --- #
         _log.info(f"!!! _check_union LOOP: Result for Member={member_repr}, Value={value!r} -> Match={match}, Details={details_obj!r}")
@@ -1058,153 +1143,186 @@ def _check_union(value: Any, expected_type: Any, globalns: Dict, localns: Option
             _log.debug(f"TRACE type_utils._check_union [ID:{func_id}]: Exiting. Result: (False, ...details...). Details: {final_obituary!r}")
         return False, final_obituary # Correct: Return tuple
 
-def _check_typevar(value: Any, expected_type: Any, globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Optional[Tuple[bool, Optional[Obituary]]]:
-    """Handle `typing.TypeVar` checks, including constraints, bounds, and consistency."""
-    # Requires localns to contain _func_id for consistency tracking
+def _check_typevar(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Optional[Tuple[bool, Optional[Obituary]]]:
+    """Handle `typing.TypeVar` checks, following specified priority:
+    1. Instance-Level Resolution (instance_map)
+    2. Constraint/Bound Check (value against TypeVar rules)
+    3. Function-Level Consistency (_TYPEVAR_BINDINGS)
+    """
     if not isinstance(expected_type, TypeVar):
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_typevar: Not a TypeVar. Returning None as unhandled.")
-        return None # Reverted: Indicate not handled
+        return None # Not a TypeVar
 
     func_id = localns.get('_func_id') if localns else None
     if func_id is None:
-        _log.warning(f"DieCast: TypeVar check for {expected_type!r} skipped: Missing function context ('_func_id') in local namespace. Path='{_format_path(path)}'")
-        # Treat as match if context is missing? Or fail? For now, maybe match to avoid breaking things.
-        return True, None # Original behavior: Warn and allow
+        _log.warning(f"DieCast: TypeVar check for {expected_type!r} skipped: Missing context ID ('_func_id') in local namespace. Path='{_format_path(path)}'")
+        return True, None # Warn and allow, as per spec
 
     if _log.isEnabledFor(logging.DEBUG):
-        _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Entering. Value={value!r}, Expected={expected_type!r} ('{expected_type.__name__}'), Path='{_format_path(path)}'")
+        _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Entering. Value={value!r}, TypeVar={expected_type!r}, Path='{_format_path(path)}', InstanceMap={instance_map}")
 
+    # --- PRIORITY 1: Instance-Level Resolution ---
+    resolved_instance_type: Optional[Type] = None
+    resolution_source = "Original TypeVar"
+    if instance_map:
+        resolved = instance_map.get(expected_type)
+        # Only consider it resolved if it's not another TypeVar
+        if resolved is not None and not isinstance(resolved, TypeVar):
+            resolved_instance_type = resolved
+            resolution_source = "Instance Map"
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Resolved {expected_type!r} -> {resolved_instance_type!r} via Instance Map.")
+        elif _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: TypeVar {expected_type!r} not found or not concrete in Instance Map.")
+
+    # --- Constraint/Bound Check ---
+    # Check the *value* against the original TypeVar's rules, regardless of resolution.
     constraints = expected_type.__constraints__
     bound = expected_type.__bound__
 
     if _log.isEnabledFor(logging.DEBUG):
-        _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Constraints={constraints!r}, Bound={bound!r}")
+        _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Checking value against original TypeVar rules: Constraints={constraints!r}, Bound={bound!r}")
 
-    # 1. Check against constraints if they exist
+    # Check constraints
     if constraints:
         match_found_in_constraints = False
         constraint_details_list = []
         for constraint in constraints:
-            constraint_match, constraint_details = check_type(value, constraint, globalns, localns, path)
+            # Pass instance_map down in case constraint involves another TypeVar
+            constraint_match, constraint_details = check_type(value, constraint, globalns, localns, path, instance_map=instance_map)
             if constraint_match:
                 match_found_in_constraints = True
                 break
-            constraint_details_list.append(constraint_details) # Collect details even on match failure
+            constraint_details_list.append(constraint_details)
 
         if not match_found_in_constraints:
-            fail_msg = "Value not in allowed types for constrained TypeVar"
-            # --- FIX: Ensure expected_repr uses the TypeVar itself --- 
-            final_expected_repr = format_type_for_display(expected_type) # <-- Correctly use the TypeVar
-            # Try to provide details from the *first* constraint failure if available
-            first_details = constraint_details_list[0] if constraint_details_list else None
-            # Use the *value's* actual type for received_repr if no inner details
-            final_received_repr = first_details.received_repr if first_details else format_type_for_display(type(value))
-            final_obituary = _create_obituary(
-                expected_repr=final_expected_repr, 
-                received_repr=final_received_repr, 
-                value=(first_details.value if first_details else value),
-                path=(first_details.path if first_details else path),
-                message=fail_msg
-            )
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_typevar: Fail (Constraint mismatch). Details: {final_obituary!r}. Exiting.")
-            return False, final_obituary
-
-    # 2. Check against bound if it exists (and no constraints, or constraints passed)
-    if bound:
-        bound_repr = format_type_for_display(bound)
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Checking against bound: {bound_repr}")
-        # Recursively check if the value is compatible with the bound type
-        bound_match, bound_details = check_type(value, bound, globalns, localns, path) # Check against the bound
-        if not bound_match:
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Bound check failed). Details: {bound_details!r}")
-            # FIX: Use the inner message directly if available for better detail.
-            # --- MODIFIED: Prioritize specific bound message --- 
-            bound_repr = format_type_for_display(bound) # Ensure bound_repr is calculated
-            fail_msg = f"Value does not meet bound type {bound_repr}" # Specific bound message
-            if bound_details and bound_details.message and bound_details.message != "Value is not an instance of expected type":
-                # Append inner reason if it's more specific than the generic isinstance failure
-                fail_msg += f": {bound_details.message}"
-            # --- END MODIFICATION ---
-
-            # Create the final obituary, preserving details if possible
+            final_expected_repr = format_type_for_display(expected_type)
             received_repr = format_type_for_display(type(value))
+            fail_msg = f"Value does not satisfy constraints {format_type_for_display(constraints)} for TypeVar {final_expected_repr}"
+            inner_details = next((d for d in constraint_details_list if d is not None), None)
             final_obituary = _create_obituary(
-                format_type_for_display(expected_type), # Use TypeVar's repr as expected
-                received_repr,                          # received_repr (positional)
-                value,                                  # value (positional)
-                path,                                   # path (positional)
-                fail_msg                                # message (positional)
+                final_expected_repr,
+                received_repr,
+                inner_details.value if inner_details else value,
+                path, # Use the path to the current value for constraint violation
+                fail_msg
             )
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_typevar: Fail (Mismatch found for value). Details: {final_obituary!r}. Exiting.")
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Value violates constraints). Details: {final_obituary!r}")
             return False, final_obituary
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Bound check passed.")
 
-    # 3. Consistency Check (if bound/constraints passed or absent)
+    # Check bound
+    if bound:
+        # Pass instance_map down in case bound involves another TypeVar
+        bound_match, bound_details = check_type(value, bound, globalns, localns, path, instance_map=instance_map)
+        if not bound_match:
+            final_expected_repr = format_type_for_display(expected_type)
+            final_obituary = _create_obituary(
+                final_expected_repr,
+                bound_details.received_repr if bound_details else format_type_for_display(type(value)),
+                bound_details.value if bound_details else value,
+                path, # Use the path to the current value for bound violation
+                f"Value does not conform to bound {format_type_for_display(bound)} for TypeVar {final_expected_repr}" + (f": {bound_details.message}" if bound_details and bound_details.message else "")
+            )
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Value violates bound). Details: {final_obituary!r}")
+            return False, final_obituary
+
+    # --- PRIORITY 2: Function-Level Consistency ---
     existing_binding = get_typevar_binding(func_id, expected_type)
     value_type = type(value)
-    # value_type_repr = format_type_for_display(value_type)
 
-    if existing_binding is not None:
+    if existing_binding:
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Existing binding found: {existing_binding!r}")
-        # Check if current value's type matches the established binding
-        # Use check_type for consistency, handles complex types
-        consistency_match, consistency_details = check_type(value, existing_binding, globalns, localns, path)
+            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Existing function binding for {expected_type!r} found: {existing_binding!r}. Checking value consistency.")
 
+        # Check value against the existing binding
+        consistency_match, consistency_details = check_type(value, existing_binding, globalns, localns, path, instance_map=instance_map)
         if not consistency_match:
-            # Consistency failure
             existing_binding_repr = format_type_for_display(existing_binding)
-            received_repr = format_type_for_display(type(value)) # Need received type repr
-            # Corrected fail_msg to include TypeVar repr (~T)
-            fail_msg = f"TypeVar consistency violation: Expected {format_type_for_display(expected_type)} (Bound to: {existing_binding_repr}) but received {received_repr}"
-            # --- ADDED: Include bound info if applicable --- #
-            if bound:
-                 bound_repr = format_type_for_display(bound)
-                 fail_msg += f" (Bound to: {bound_repr})"
-            # --- END ADDITION --- #
-            # Create final obituary - use details from the failed consistency check if available
-            # Ensure received_repr is calculated (done above)
-            # received_repr = format_type_for_display(type(value))
-            if consistency_details:
-                final_obituary = consistency_details # Use the detailed inner failure
-                # Update the message to reflect the overarching consistency failure
-                final_obituary = dataclasses.replace(final_obituary, message=fail_msg)
-                # <<< ADDED LINE BELOW >>>
-                final_obituary = dataclasses.replace(final_obituary, expected_repr=format_type_for_display(expected_type))
-            else:
-                # Create a new obituary if no inner details were available
-                final_obituary = _create_obituary(
-                    format_type_for_display(expected_type), # Use TypeVar's repr as expected
-                    received_repr,                          # received_repr (positional)
-                    value,                                  # value (positional)
-                    path,                                   # path (positional)
-                    fail_msg                                # message (positional)
-                )
-
-            # If we used details from consistency check, update the message
-            # This is now handled above when setting final_obituary
-            # if consistency_details:
-            #    final_obituary = dataclasses.replace(final_obituary, message=fail_msg)
-
+            received_repr = format_type_for_display(value_type)
+            fail_msg = f"TypeVar consistency violation: Expected {format_type_for_display(expected_type)} (Bound to: {existing_binding_repr} in this call) but received {received_repr}"
+            expected_repr_with_binding = f"{format_type_for_display(expected_type)} (bound to {existing_binding_repr})"
+            final_obituary = dataclasses.replace(
+                consistency_details,
+                message=fail_msg,
+                expected_repr=expected_repr_with_binding # Include binding info
+            ) if consistency_details else _create_obituary(
+                expected_repr_with_binding, received_repr, value, path, fail_msg # Include binding info
+            )
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_typevar: Fail (Consistency check failed). Details: {final_obituary!r}")
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Value inconsistent with function binding). Details: {final_obituary!r}")
             return False, final_obituary
-        else:
+
+        # If instance map also resolved, check value against that resolved type too
+        if resolved_instance_type:
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Match (Consistency check passed).")
-            return True, None # Consistent with existing binding
-    else:
-        # No existing binding, establish one
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Value passed function binding check. Also checking against Instance Map target ({resolved_instance_type!r}).")
+            instance_target_match, instance_target_details = check_type(value, resolved_instance_type, globalns, localns, path, instance_map=instance_map)
+            if not instance_target_match:
+                fail_msg = f"Value is compatible with function binding ({existing_binding!r}) but not with instance resolution ({resolved_instance_type!r}) for {expected_type!r}"
+                final_obituary = dataclasses.replace(
+                    instance_target_details,
+                    message=fail_msg,
+                    expected_repr=format_type_for_display(resolved_instance_type) # Report failure against instance type
+                ) if instance_target_details else _create_obituary(
+                    format_type_for_display(resolved_instance_type), format_type_for_display(value_type), value, path, fail_msg
+                )
+                if _log.isEnabledFor(logging.DEBUG):
+                    _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Value inconsistent with instance map target). Details: {final_obituary!r}")
+                return False, final_obituary
+
+        # Passed all checks (binding and optional instance resolution)
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: No existing binding. Binding {expected_type!r} to {value_type!r}.")
-        bind_typevar(func_id, expected_type, value_type)
-        return True, None # First encounter, implicitly consistent
+            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Match (Value consistent with existing binding and instance map target if applicable).")
+        return True, None
+
+    else: # No existing function binding
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: No existing function binding for {expected_type!r}. Proceeding to check value and potentially bind.")
+
+        # Determine the type to check against: resolved instance type first, then original TypeVar (bounds/constraints already checked)
+        check_target_type = resolved_instance_type if resolved_instance_type else expected_type
+        target_repr = format_type_for_display(check_target_type)
+        resolution_info = f"(Source: {resolution_source})" if check_target_type is not expected_type else "(Using original TypeVar, bounds/constraints passed)"
+
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: CheckTarget={target_repr} {resolution_info}. Checking value against this target.")
+
+        # Perform the check against the determined target type
+        # Note: If check_target_type is expected_type, we rely on the earlier constraint/bound checks.
+        #       If check_target_type is resolved_instance_type, we need an explicit check.
+        target_match = True
+        target_details = None
+        if check_target_type is not expected_type: # Only need explicit check if resolved by instance map
+            target_match, target_details = check_type(value, check_target_type, globalns, localns, path, instance_map=instance_map)
+
+        if target_match:
+            # Value is compatible with the check target (either original TypeVar rules or resolved instance type).
+            # Now, bind the TypeVar to the actual value's type for this function call.
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Match (Value compatible with CheckTarget {target_repr}). Binding {expected_type!r} -> {value_type!r} for function scope.")
+            bind_typevar(func_id, expected_type, value_type)
+            return True, None
+        else:
+            # Value failed the check against the resolved instance type.
+            fail_msg = f"Value does not match expected type {target_repr} (resolved from instance map for {expected_type!r})"
+            final_obituary = dataclasses.replace(
+                target_details,
+                message=fail_msg,
+                expected_repr=target_repr # Report failure against instance type
+            ) if target_details else _create_obituary(
+                target_repr, format_type_for_display(value_type), value, path, fail_msg
+            )
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_typevar [ID:{func_id}]: Fail (Value does not match Instance Map target {target_repr}). Details: {final_obituary!r}")
+            return False, final_obituary
 
 def _check_forward_ref(
     value: Any,
@@ -1212,6 +1330,7 @@ def _check_forward_ref(
     globalns: Dict[str, Any],
     localns: Optional[Dict[str, Any]],
     path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None
 ) -> Optional[Tuple[bool, Optional[Obituary]]]:
     """Handle `typing.ForwardRef` checks."""
     if not isinstance(expected_type, ForwardRef):
@@ -1259,7 +1378,7 @@ def _check_forward_ref(
             globalns=globalns,
             localns=localns,
             path=path,
-            # func_id is implicitly handled by localns within check_type if needed
+            instance_map=instance_map
         )
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_forward_ref: Recursive check returned: match={match}")
@@ -1268,37 +1387,45 @@ def _check_forward_ref(
                 _log.debug(f"TRACE type_utils._check_forward_ref: Match (Recursive check passed). Exiting.")
                 return True, None
         else:
-             # Always create a new Obituary for the ForwardRef failure
-             # Use the original ref name (e.g., 'MyClass') as the expected representation
-             fail_msg = f"Value does not match resolved forward reference type '{type_name}' (resolved to {resolved_repr})"
-             # Append inner reason if available
-             if details_obj and details_obj.message:
-                 fail_msg += f": {details_obj.message}"
+            # Always create a new Obituary for the ForwardRef failure
+            # Use the original ref name (e.g., 'MyClass') as the expected representation
+            fail_msg = f"Value does not match resolved forward reference type '{type_name}' (resolved to {resolved_repr})"
+            # Append inner reason if available
+            if details_obj and details_obj.message:
+                fail_msg += f": {details_obj.message}"
 
-             # Corrected call to use positional args
-             # Ensure received_repr is calculated (already done above)
-             final_obituary = _create_obituary(
-                 type_name,      # expected_repr (original ref string)
-                 received_repr,  # received_repr
-                 value,          # value
-                 path,           # path
-                 fail_msg        # message
-             )
-             if _log.isEnabledFor(logging.DEBUG):
+            # Corrected call to use positional args
+            # Ensure received_repr is calculated (already done above)
+            final_obituary = _create_obituary(
+                type_name,      # expected_repr (original ref string)
+                received_repr,  # received_repr
+                value,          # value
+                path,           # path
+                fail_msg        # message
+            )
+            if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE type_utils._check_forward_ref: Fail (Recursive check failed). Details: {final_obituary!r}. Exiting.")
-             return False, final_obituary
+            return False, final_obituary
 
     except NameError as e:
-        # If resolution fails, treat it as a type check failure
+        # If resolution fails, re-raise the NameError as expected
         err_msg = f"Could not resolve forward reference '{type_name}': {e}"
-        _log.warning(f"TRACE type_utils._check_forward_ref: Fail ({err_msg}). Exiting.")
-        return False, fail_obituary_func(err_msg)
+        _log.warning(f"TRACE type_utils._check_forward_ref: NameError ({err_msg}). Re-raising.")
+        raise e # Re-raise the original NameError
     except Exception as e:
         err_msg = f"Unexpected error resolving forward reference '{type_name}': {e!r}"
+        err_msg = f"Unexpected error resolving forward reference '{type_name}': {e!r}"
         _log.error(f"TRACE type_utils._check_forward_ref: Fail ({err_msg}). Exiting.", exc_info=True)
+        # Use fail_obituary_func which already uses type_name as expected_repr
         return False, fail_obituary_func(err_msg)
 
-def _check_generic_alias(value: Any, expected_type: Any, globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Optional[Tuple[bool, Optional[Obituary]]]:
+def _check_generic_alias(
+    value: Any,
+    expected_type: Any,
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None) -> Optional[Tuple[bool, Optional[Obituary]]]:
     """Dispatcher for generic alias types (List, Dict, Tuple, etc.)."""
     # func_id = localns.get("_func_id", "unknown") if localns else "unknown"
     # Get origin and args without resolving inner types yet
@@ -1324,12 +1451,15 @@ def _check_generic_alias(value: Any, expected_type: Any, globalns: Dict, localns
     if value is None:
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Fail (Value is None, expected generic {expected_repr}).")
-        fail_obituary = _create_obituary(expected_repr, value, path, "Value is None but expected a generic container type")
+        # FIX: Use "NoneType" string for received_repr when value is None
+        fail_obituary = _create_obituary(expected_repr, "NoneType", value, path, "Value is None but expected a generic container type")
         return False, fail_obituary
 
     # Helper for creating failure obituary within this function
+    # FIX: Ensure received_repr is formatted type string in helper
+    received_repr_generic = format_type_for_display(type(value))
     def fail_obituary(message: str) -> Obituary:
-        return _create_obituary(expected_repr, value, path, message)
+        return _create_obituary(expected_repr, received_repr_generic, value, path, message)
 
     # Check if value type matches expected origin BEFORE dispatch using optimized check
     if not is_instance_optimized(value, origin):
@@ -1348,22 +1478,22 @@ def _check_generic_alias(value: Any, expected_type: Any, globalns: Dict, localns
     if origin is tuple:
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Dispatching to _check_generic_tuple.")
-        result_match, result_obituary = _check_generic_tuple(value, args, globalns, localns, path)
+        result_match, result_obituary = _check_generic_tuple(value, args, globalns, localns, path, instance_map=instance_map)
         return result_match, result_obituary
     elif is_instance_optimized(value, collections.abc.Mapping):
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Dispatching to _check_generic_mapping.")
-        result_match, result_obituary = _check_generic_mapping(value, args, globalns, localns, path)
+        result_match, result_obituary = _check_generic_mapping(value, args, globalns, localns, path, instance_map=instance_map)
         return result_match, result_obituary
     elif is_instance_optimized(value, collections.abc.Sequence):
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Dispatching to _check_generic_sequence.")
-        result_match, result_obituary = _check_generic_sequence(value, args, globalns, localns, path)
+        result_match, result_obituary = _check_generic_sequence(value, args, globalns, localns, path, instance_map=instance_map)
         return result_match, result_obituary
     elif is_instance_optimized(value, collections.abc.Set):
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Dispatching to _check_generic_set.")
-        result_match, result_obituary = _check_generic_set(value, args, globalns, localns, path)
+        result_match, result_obituary = _check_generic_set(value, args, globalns, localns, path, instance_map=instance_map)
         return result_match, result_obituary
     elif origin in (
         collections.abc.AsyncGenerator,
@@ -1376,8 +1506,40 @@ def _check_generic_alias(value: Any, expected_type: Any, globalns: Dict, localns
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_generic_alias: Found Generator/Iterator/Iterable type {expected_repr}. Match based on origin. Exiting.")
         return True, None
+    elif origin is typing.Type:
+        # Handle typing.Type[T] checks
+        if not args or len(args) != 1:
+            return False, fail_obituary("Invalid typing.Type annotation structure")
 
-    _log.warning(f"TRACE type_utils._check_generic_alias: Unhandled generic alias type: {expected_repr}. Failing check.")
+    inner_expected_type = args[0]
+    resolved_inner_type = inner_expected_type
+
+    # Resolve if inner type is TypeVar and map exists
+    if isinstance(inner_expected_type, TypeVar) and instance_map:
+        resolved_inner_type = instance_map.get(inner_expected_type, inner_expected_type)
+
+    # Check 1: Value must be a type object
+    if not isinstance(value, type):
+        value_repr = format_type_for_display(type(value))
+        inner_expected_repr = format_type_for_display(resolved_inner_type)
+        expected_type_repr = f"type object representing {inner_expected_repr}"
+        return False, _create_obituary(expected_type_repr, value_repr, value, path, "Expected a type object, but received an instance or other value")
+
+    # Check 2: The type object must be the resolved inner type
+    if value is resolved_inner_type:
+        if _log.isEnabledFor(logging.DEBUG):
+             _log.debug(f"TRACE type_utils._check_generic_alias: Match (type object {format_type_for_display(value)} is resolved inner type {format_type_for_display(resolved_inner_type)}). Path='{path_repr}'")
+        return True, None
+    else:
+        value_repr = format_type_for_display(value)
+        expected_type_repr = format_type_for_display(resolved_inner_type)
+        if _log.isEnabledFor(logging.DEBUG):
+             _log.debug(f"TRACE type_utils._check_generic_alias: Fail (type object {value_repr} is not the expected type object {expected_type_repr}). Path='{path_repr}'")
+        return False, _create_obituary(f"type object {expected_type_repr}", f"type object {value_repr}", value, path, "Incorrect type object received")
+
+# Fallback for other unhandled generic aliases
+    # Fallback for other unhandled generic aliases
+    _log.warning(f"TRACE type_utils._check_generic_alias: Unhandled generic alias origin: {origin}. Failing check for {expected_repr}.")
     return False, fail_obituary("Unsupported generic type structure")
 
 def _check_simple_type(value: Any, expected_type: Any, path: List[Union[str, int]]) -> Tuple[bool, Optional[Obituary]]:
@@ -1399,29 +1561,53 @@ def _check_simple_type(value: Any, expected_type: Any, path: List[Union[str, int
              if origin is None:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE type_utils._check_simple_type: Fail (Expected type is not a class/tuple and has no origin). Path='{path_repr}'")
-                    obituary = _create_obituary(expected_type_repr, value, path, "Expected type is not a class or tuple of classes")
-                    return False, obituary
+                # FIX: Ensure received_repr is formatted and return tuple
+                received_repr = format_type_for_display(type(value))
+                obituary = _create_obituary(expected_type_repr, received_repr, value, path, "Expected type is not a class or tuple of classes")
+                return False, obituary # ENSURE TUPLE RETURN
              # If origin exists and isn't a type/tuple, that's also unusual here
              elif not isinstance(origin, (type, tuple)):
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE type_utils._check_simple_type: Fail (Origin type is not a class/tuple). Path='{path_repr}'")
-                    obituary = _create_obituary(expected_type_repr, value, path, "Origin of expected type is not a class or tuple of classes")
-                    return False, obituary
+                # FIX: Ensure received_repr is formatted and return tuple
+                received_repr = format_type_for_display(type(value))
+                obituary = _create_obituary(expected_type_repr, received_repr, value, path, "Origin of expected type is not a class or tuple of classes")
+                return False, obituary # ENSURE TUPLE RETURN
              # else: check_target should be valid type(s) from origin
 
         if expected_type is int and isinstance(value, bool):
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE type_utils._check_simple_type: Fail (bool value rejected for int hint). Path='{path_repr}'")
-                obituary = _create_obituary(expected_type_repr, value, path, "Value is bool, expected int")
-                return False, obituary
+            # FIX: Ensure received_repr is formatted and return tuple
+            received_repr = format_type_for_display(type(value))
+            obituary = _create_obituary(expected_type_repr, received_repr, value, path, "Value is bool, expected int")
+            return False, obituary # ENSURE TUPLE RETURN
 
-        # Use the potentially simplified check_target (e.g., list for List[int])
-        is_match = isinstance(value, check_target)
+        # --- MODIFIED: Check for DieCast specialized type first ---
+        value_type = type(value)
+        is_match = False
+        if getattr(value_type, '_DIECAST_SPECIALIZED_GENERIC', False): # Corrected marker check AGAIN
+            value_alias = getattr(value_type, '_diecast_generic_alias', None)
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_simple_type: Value is DieCast specialized. Comparing its alias '{value_alias!r}' with expected type '{expected_type!r}'.")
+            if value_alias is not None and value_alias == expected_type:
+                 is_match = True
+                 if _log.isEnabledFor(logging.DEBUG):
+                     _log.debug(f"TRACE type_utils._check_simple_type: Match (DieCast alias comparison passed).")
+            # else: Alias doesn't match or is missing, fall through to isinstance check below
+
+        # Fallback to standard isinstance if not DieCast specialized or alias didn't match
+        if not is_match:
+             if _log.isEnabledFor(logging.DEBUG):
+                 log_reason = "(Not DieCast specialized)" if not getattr(value_type, '_DIECAST_SPECIALIZED_GENERIC', False) else "(DieCast alias mismatch/missing)" # Corrected marker check AGAIN
+                 _log.debug(f"TRACE type_utils._check_simple_type: Falling back to isinstance check {log_reason}.")
+             is_match = isinstance(value, check_target)
+        # --- END MODIFICATION ---
 
         if is_match:
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE type_utils._check_simple_type: Match (isinstance check passed). Path='{path_repr}'")
-                return True, None
+            return True, None # ENSURE TUPLE RETURN
         else:
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"TRACE type_utils._check_simple_type: Fail (isinstance check failed). Path='{path_repr}'")
@@ -1434,7 +1620,7 @@ def _check_simple_type(value: Any, expected_type: Any, path: List[Union[str, int
                 path=path,
                 message="Value is not an instance of expected type"
             )
-            return False, obituary
+            return False, obituary # ENSURE TUPLE RETURN
 
     except TypeError as e:
         # isinstance can raise TypeError for non-class second arguments
@@ -1449,15 +1635,124 @@ def _check_simple_type(value: Any, expected_type: Any, path: List[Union[str, int
             path=path,
             message=f"TypeError during type check: {e}"
         )
-        return False, obituary
+        return False, obituary # ENSURE TUPLE RETURN
 
 ## ===== GENERIC TYPE CHECKERS ===== ##
-def _check_generic_tuple(value: Tuple, args: Tuple[Any, ...], globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Tuple[bool, Optional[Obituary]]:
+
+# ===== TYPE RESOLUTION HELPER ===== #
+# ADDED: Import needed for marker check
+from .config import _DIECAST_MARKER # Corrected import
+
+def _resolve_type_with_map(tp: Any, instance_map: Optional[Dict[TypeVar, Type]]) -> Any:
+    """Recursively resolve TypeVars within a type using an instance map."""
+    tp_repr = format_type_for_display(tp) # Use formatter for complex types
+    _log.info(f"!!! _resolve_type_with_map ENTER: tp={tp_repr}, instance_map={instance_map!r}")
+
+    if not instance_map:
+        _log.info(f"!!! _resolve_type_with_map EXIT (no map): Returning original tp={tp_repr}")
+        return tp
+
+    # 1. Handle TypeVar directly
+    if isinstance(tp, TypeVar):
+        resolved = instance_map.get(tp)
+        result = resolved if resolved is not None and not isinstance(resolved, TypeVar) else tp
+        result_repr = format_type_for_display(result)
+        _log.info(f"!!! _resolve_type_with_map EXIT (TypeVar): Input={tp!r}, Resolved={resolved!r}, Returning={result_repr}")
+        return result
+
+    # 2. Get Origin and Arguments - Try standard introspection first
+    origin = get_origin(tp)
+    args = get_args(tp)
+    _log.info(f"!!! _resolve_type_with_map: Initial Introspection: Origin={origin!r}, Args={args!r}")
+
+    # 3. Fallback for DieCast Specialized Types if standard introspection fails
+    if origin is None and getattr(tp, '_DIECAST_SPECIALIZED_GENERIC', False): # Use correct marker
+        _log.info(f"!!! _resolve_type_with_map: Standard get_origin failed. Trying _diecast_generic_alias for: {tp_repr}")
+        alias = getattr(tp, '_diecast_generic_alias', None)
+        if alias:
+            origin = get_origin(alias) # Get origin from stored alias
+            args = get_args(alias)     # Get args from stored alias
+            _log.info(f"!!! _resolve_type_with_map: Using _diecast_generic_alias: Origin={origin!r}, Args={args!r}")
+        else:
+            _log.warning(f"!!! _resolve_type_with_map: DieCast specialized type {tp_repr} missing _diecast_generic_alias. Returning original.")
+            return tp
+
+    # 4. If still no origin or args, cannot resolve further
+    if not origin or not args:
+        _log.info(f"!!! _resolve_type_with_map EXIT (no origin/args after potential fallback): Returning original tp={tp_repr}")
+        return tp
+
+    # 5. Recursively resolve arguments
+    resolved_args_list = []
+    args_changed = False
+    for i, arg in enumerate(args):
+        arg_repr = format_type_for_display(arg)
+        _log.info(f"!!! _resolve_type_with_map RECURSE START (arg {i}): Resolving arg={arg_repr} from tp={tp_repr}")
+        # Pass the same instance_map down for nested resolutions
+        resolved_arg = _resolve_type_with_map(arg, instance_map)
+        resolved_arg_repr = format_type_for_display(resolved_arg)
+        _log.info(f"!!! _resolve_type_with_map RECURSE END (arg {i}): Original arg={arg_repr}, Resolved arg={resolved_arg_repr}")
+        if resolved_arg is not arg:
+            args_changed = True
+        resolved_args_list.append(resolved_arg)
+
+    resolved_args = tuple(resolved_args_list)
+
+    # 6. If no arguments were changed, we still need to reconstruct if we started
+    #    with a specialized type, to ensure we return the standard alias.
+    #    If args *were* changed, we definitely need to reconstruct.
+    #    Only return original 'tp' if we couldn't get origin/args or reconstruction fails.
+    #    (Effectively, remove the 'if not args_changed: return tp' block)
+    # if not args_changed:
+    #     _log.info(f"!!! _resolve_type_with_map EXIT (no args changed): Returning original tp={tp_repr}")
+    #     return tp
+
+    # 7. Reconstruct the generic type using the determined origin and resolved arguments.
+    #    This ensures we return the standard alias representation (e.g., list[int])
+    #    even if the input was a specialized type or resolution didn't change args.
+    origin_name = getattr(origin, '__name__', str(origin))
+    _log.info(f"!!! _resolve_type_with_map RECONSTRUCT START: Origin={origin_name}, ResolvedArgs={resolved_args!r}")
+    try:
+        if resolved_args: # Ensure resolved_args is not empty
+            reconstructed_type = origin[resolved_args]
+            reconstructed_repr = format_type_for_display(reconstructed_type)
+            _log.info(f"!!! _resolve_type_with_map RECONSTRUCT SUCCESS (standard subscript): Returning {reconstructed_repr}")
+            return reconstructed_type
+        else:
+            _log.warning(f"Cannot reconstruct {origin_name} with empty args via standard subscription. Returning origin.")
+            _log.info(f"!!! _resolve_type_with_map RECONSTRUCT FAIL (subscript empty args): Returning origin {origin_name}")
+            return origin
+    except Exception as e:
+        _log.warning(f"Failed to reconstruct generic type {origin_name} with resolved args {resolved_args}: {e}. Returning original type {tp_repr}.")
+        _log.info(f"!!! _resolve_type_with_map RECONSTRUCT FAIL (Exception {e!r}): Returning original tp={tp_repr}")
+        return tp
+
+def _check_generic_tuple(
+    value: Tuple,
+    args: Tuple[Any, ...],
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None) -> Tuple[bool, Optional[Obituary]]:
     """Handle `Tuple[X, Y, ...]` or `Tuple[X, ...]` checks."""
-    if not args: 
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug("TRACE type_utils._check_generic_tuple: No args provided for tuple check. Match.")
-        return True, None # Tuple without args (plain tuple)
+    # Handle Tuple[()] specifically - must be an empty tuple
+    if args == (): # Check if the type hint is Tuple[()]
+        if len(value) == 0: # Check if the *value* is actually empty
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug("TRACE type_utils._check_generic_tuple: Match (Empty tuple for Tuple[()]).")
+            return True, None
+        else:
+            # Value is not empty, but Tuple[()] was expected
+            expected_repr = format_type_for_display(Tuple[()])
+            received_repr = format_type_for_display(type(value))
+            fail_msg = f"Expected tuple of length 0 (Tuple[()]), but got tuple of length {len(value)}"
+            obituary = _create_obituary(expected_repr, received_repr, value, path, fail_msg)
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE type_utils._check_generic_tuple: Fail ({fail_msg}). Details: {obituary!r}")
+            return False, obituary
+    # If args is not empty, proceed with normal checks (variable or fixed-length)
+
+    # If args is not empty, proceed with normal checks
 
     path_repr = _format_path(path)
     # FIX: Define expected_repr before length check
@@ -1468,22 +1763,25 @@ def _check_generic_tuple(value: Tuple, args: Tuple[Any, ...], globalns: Dict, lo
     # Handle variable-length tuples (e.g., Tuple[int, ...])
     is_variable_tuple = len(args) == 2 and args[1] is Ellipsis
     if is_variable_tuple:
-        element_type = args[0]
-        element_type_repr = format_type_for_display(element_type) # Cache for logging
+        element_type_orig = args[0]
+        # Resolve the element type *before* the loop
+        resolved_element_type = _resolve_type_with_map(element_type_orig, instance_map)
+        resolved_element_type_repr = format_type_for_display(resolved_element_type) # Cache for logging
+
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_generic_tuple: Handling variable-length tuple. Element type={element_type_repr}")
-        if element_type is Any:
+            _log.debug(f"TRACE type_utils._check_generic_tuple: Handling variable-length tuple. Resolved element type={resolved_element_type_repr}")
+        if resolved_element_type is Any:
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug("TRACE type_utils._check_generic_tuple: Element type is Any. Match.")
+                _log.debug("TRACE type_utils._check_generic_tuple: Resolved element type is Any. Match.")
             return True, None
 
         for index, item in enumerate(value):
             item_path = path + [index]
             item_path_repr = _format_path(item_path) # Cache for logging
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_generic_tuple: Variable tuple loop [{index}]: Checking item={item!r}, Path='{item_path_repr}'")
-            # Performance guard: Recursive call
-            match, details_obj = check_type(item, element_type, globalns, localns, item_path) # Rename
+                _log.debug(f"TRACE type_utils._check_generic_tuple: Variable tuple loop [{index}]: Checking item={item!r} against resolved type {resolved_element_type_repr}, Path='{item_path_repr}'")
+            # Performance guard: Recursive call against resolved type
+            match, details_obj = check_type(item, resolved_element_type, globalns, localns, item_path, instance_map=instance_map)
             if not match:
                 # --- MODIFIED: Create container obituary, use inner path --- #
                 fail_msg = f"Incorrect element type at index {index} in variable-length tuple"
@@ -1509,40 +1807,49 @@ def _check_generic_tuple(value: Tuple, args: Tuple[Any, ...], globalns: Dict, lo
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE type_utils._check_generic_tuple: Variable tuple loop [{index}]: Match.")
 
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug("TRACE type_utils._check_generic_tuple: Match (All variable tuple elements matched). Exiting.")
+        # This block should be outside the loop, aligned with the 'for'
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("TRACE type_utils._check_generic_tuple: Match (All variable tuple elements matched). Exiting.")
         return True, None
 
     # Handle fixed-length tuples (e.g., Tuple[int, str])
     _log.debug("TRACE type_utils._check_generic_tuple: Handling fixed-length tuple.")
     if len(value) != len(args):
-        fail_msg = f"Expected {len(args)} elements, got {len(value)}"
-        # FIX: Correct arguments for _create_obituary
-        received_repr = format_type_for_display(type(value))
+        fail_msg = f"Expected fixed-length tuple of size {len(args)}, but got size {len(value)}"
+        # Use the expected_repr calculated earlier (e.g., "Tuple[int, str]")
+        received_repr = format_type_for_display(type(value)) # Should be tuple, but format anyway
         final_obituary = _create_obituary(
-            expected_repr,  # Correct arg
-            received_repr,  # Correct arg (was missing)
-            value,          # Correct arg
-            path,           # Correct arg
-            fail_msg        # Correct arg
+            expected_repr=expected_repr, # Use the formatted Tuple[X, Y] representation
+            received_repr=received_repr,
+            value=value,
+            path=path,
+            message=fail_msg
         )
         if _log.isEnabledFor(logging.DEBUG):
             _log.debug(f"TRACE type_utils._check_tuple: Fail (Length mismatch). Details: {final_obituary!r}. Exiting.")
         return False, final_obituary
 
-    for index, (item, element_type) in enumerate(zip(value, args)):
+    # Resolve all element types *before* the loop for fixed-length tuples
+    resolved_args = tuple(_resolve_type_with_map(arg, instance_map) for arg in args)
+    if _log.isEnabledFor(logging.DEBUG):
+        if resolved_args != args:
+             _log.debug(f"TRACE type_utils._check_generic_tuple: Resolved fixed tuple args: {resolved_args!r}")
+        else:
+             _log.debug(f"TRACE type_utils._check_generic_tuple: Fixed tuple args require no resolution via instance_map.")
+
+    for index, (item, resolved_element_type) in enumerate(zip(value, resolved_args)):
         item_path = path + [index]
         item_path_repr = _format_path(item_path) # Cache for logging
-        element_type_repr = format_type_for_display(element_type) # Cache for logging
+        resolved_element_type_repr = format_type_for_display(resolved_element_type) # Cache for logging
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_generic_tuple: Fixed tuple loop [{index}]: Checking item={item!r} against {element_type_repr}, Path='{item_path_repr}'")
-        if element_type is Any: 
+            _log.debug(f"TRACE type_utils._check_generic_tuple: Fixed tuple loop [{index}]: Checking item={item!r} against resolved type {resolved_element_type_repr}, Path='{item_path_repr}'")
+        if resolved_element_type is Any:
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug("TRACE type_utils._check_generic_tuple: Fixed tuple loop [{index}]: Skipping Any.")
             continue
-            
-        # Performance guard: Recursive call
-        match, details_obj = check_type(item, element_type, globalns, localns, item_path) # Rename
+
+        # Performance guard: Recursive call against resolved type
+        match, details_obj = check_type(item, resolved_element_type, globalns, localns, item_path, instance_map=instance_map)
         if not match:
             # --- MODIFIED: Create container obituary, use inner path ---
             fail_msg = f"Incorrect element type at index {index} in fixed-length tuple"
@@ -1552,6 +1859,7 @@ def _check_generic_tuple(value: Tuple, args: Tuple[Any, ...], globalns: Dict, lo
 
             final_expected_repr = details_obj.expected_repr if details_obj else format_type_for_display(element_type) # Use specific element_type here
             final_received_repr = details_obj.received_repr if details_obj else format_type_for_display(type(item))
+
             final_received_value = details_obj.value if details_obj else item
             # Use path from inner details if available, otherwise use current item_path
             final_path = details_obj.path if details_obj else item_path
@@ -1575,7 +1883,14 @@ def _check_generic_tuple(value: Tuple, args: Tuple[Any, ...], globalns: Dict, lo
         _log.debug("TRACE type_utils._check_generic_tuple: Match (All fixed tuple elements matched). Exiting.")
     return True, None
 
-def _check_generic_sequence(value: Sequence, args: Tuple[Any, ...], globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Tuple[bool, Optional[Obituary]]:
+def _check_generic_sequence(
+    value: Sequence,
+    args: Tuple[Any, ...],
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Tuple[bool, Optional[Obituary]]:
     """Handle `Sequence[T]` checks (applies to list, tuple, etc.)."""
     if not args: 
         if _log.isEnabledFor(logging.DEBUG):
@@ -1594,27 +1909,49 @@ def _check_generic_sequence(value: Sequence, args: Tuple[Any, ...], globalns: Di
             _log.debug("TRACE type_utils._check_generic_sequence: Element type is Any. Match. Exiting.")
         return True, None # Sequence[Any]
 
+    # Resolve the expected element type *before* the loop using the instance map
+    resolved_element_type = _resolve_type_with_map(element_type, instance_map)
+    resolved_element_type_repr = format_type_for_display(resolved_element_type) # Cache for logging
+
+    if _log.isEnabledFor(logging.DEBUG):
+        if resolved_element_type is not element_type:
+             _log.debug(f"TRACE type_utils._check_generic_sequence: Resolved element type {element_type_repr} -> {resolved_element_type_repr} using instance_map.")
+        else:
+             _log.debug(f"TRACE type_utils._check_generic_sequence: Element type {element_type_repr} requires no resolution via instance_map.")
+
+    if resolved_element_type is Any: # Optimization after resolution
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("TRACE type_utils._check_generic_sequence: Resolved element type is Any. Match. Exiting.")
+        return True, None
+
     for index, item in enumerate(value):
         item_path = path + [index]
         item_path_repr = _format_path(item_path)
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"!!! _check_generic_sequence LOOP [{index}]: PRE-CHECK item={item!r} (type={type(item).__name__}), ExpectedElement={element_type_repr}, Path='{item_path_repr}'")
-            _log.debug(f"TRACE type_utils._check_generic_sequence: Loop [{index}]: Checking item={item!r}, Path='{item_path_repr}'")
+             _log.debug(f"TRACE type_utils._check_generic_sequence: Loop [{index}]: Checking item={item!r} against resolved type {resolved_element_type_repr}, Path='{item_path_repr}'")
 
-        match, details_obj = check_type(item, element_type, globalns, localns, item_path)
+        # Check item against the *resolved* element type
+        match, details_obj = check_type(item,
+                                     resolved_element_type, # Use the resolved type
+                                     globalns, localns, item_path, instance_map=instance_map) # Pass instance_map for potential nested TypeVars within item itself
         if not match:
             if _log.isEnabledFor(logging.DEBUG):
-                _log.info(f"!!! _check_generic_sequence FAILURE BLOCK ENTERED: Index={index}, Item={item!r}, Match={match}, Details={details_obj!r}")
                 # Return the inner failure details directly
                 _log.debug(f"TRACE type_utils._check_generic_sequence: Fail (Mismatch at index {index}). Returning inner details: {details_obj!r}. Exiting.")
             return False, details_obj
-            
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE type_utils._check_generic_sequence: Match (All elements matched). Exiting.")
-        # _log.info(f"!!! _check_generic_sequence RETURNING: (True, None) for path '{_format_path(path)}'")
-        return True, None
 
-def _check_generic_mapping(value: Mapping, args: Tuple[Any, ...], globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Tuple[bool, Optional[Obituary]]:
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE type_utils._check_generic_sequence: Match (All elements matched). Exiting.")
+    return True, None
+
+def _check_generic_mapping(
+    value: Mapping,
+    args: Tuple[Any, ...],
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Tuple[bool, Optional[Obituary]]:
     """Handle `Mapping[K, V]` checks (applies to dict)."""
     if not args or len(args) != 2: 
         if _log.isEnabledFor(logging.DEBUG):
@@ -1629,28 +1966,41 @@ def _check_generic_mapping(value: Mapping, args: Tuple[Any, ...], globalns: Dict
     if _log.isEnabledFor(logging.DEBUG):
         _log.debug(f"TRACE type_utils._check_generic_mapping: Entering. Value=<{type(value).__name__} len={len(value)}>, KeyType={key_type_repr}, ValueType={value_type_repr}, Path='{path_repr}'")
 
-    # Optimization: If both key and value types are Any, no need to iterate
-    if key_type is Any and value_type is Any: 
+    # Resolve key and value types *before* the loop using the instance map
+    resolved_key_type = _resolve_type_with_map(key_type, instance_map)
+    resolved_value_type = _resolve_type_with_map(value_type, instance_map)
+    resolved_key_type_repr = format_type_for_display(resolved_key_type) # Cache for logging
+    resolved_value_type_repr = format_type_for_display(resolved_value_type) # Cache for logging
+
+    if _log.isEnabledFor(logging.DEBUG):
+        if resolved_key_type is not key_type:
+             _log.debug(f"TRACE type_utils._check_generic_mapping: Resolved key type {key_type_repr} -> {resolved_key_type_repr} using instance_map.")
+        if resolved_value_type is not value_type:
+             _log.debug(f"TRACE type_utils._check_generic_mapping: Resolved value type {value_type_repr} -> {resolved_value_type_repr} using instance_map.")
+
+    # Optimization: If both resolved key and value types are Any, no need to iterate
+    if resolved_key_type is Any and resolved_value_type is Any:
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug("TRACE type_utils._check_generic_mapping: KeyType and ValueType are Any. Match. Exiting.")
+            _log.debug("TRACE type_utils._check_generic_mapping: Resolved KeyType and ValueType are Any. Match. Exiting.")
         return True, None
 
     for key, item in value.items():
-        # key_path = path + [repr(key)] # Use repr(key) for path segment - Incorrect
-        key_path = path + [key]
+        # Use a consistent format for keys in the path
+        key_path = path + [f'key({key!r})']
         key_path_repr = _format_path(key_path)
 
-        # Check key type
-        if key_type is not Any:
+        # Check key type against the *resolved* key type
+        if resolved_key_type is not Any:
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_generic_mapping: Checking Key {key!r} against {key_type_repr}, Path='{key_path_repr}'")
+                _log.debug(f"TRACE type_utils._check_generic_mapping: Checking Key {key!r} against resolved type {resolved_key_type_repr}, Path='{key_path_repr}'")
             # Performance guard: Recursive call
-            match, inner_details_obj = check_type(key, key_type, globalns, localns, key_path) 
+            match, inner_details_obj = check_type(key, resolved_key_type, globalns, localns, key_path, instance_map=instance_map)
             if not match:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE type_utils._check_generic_mapping: Fail (Key mismatch for key {key!r}). Creating specific key failure obituary.")
-                    key_fail_obituary = _create_obituary(
-                    expected_repr=inner_details_obj.expected_repr if inner_details_obj else format_type_for_display(key_type),
+                # Use resolved key type repr in obituary
+                key_fail_obituary = _create_obituary(
+                    expected_repr=inner_details_obj.expected_repr if inner_details_obj else resolved_key_type_repr,
                     received_repr=inner_details_obj.received_repr if inner_details_obj else format_type_for_display(type(key)),
                     value=key,
                     path=key_path,
@@ -1661,12 +2011,12 @@ def _check_generic_mapping(value: Mapping, args: Tuple[Any, ...], globalns: Dict
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"TRACE type_utils._check_generic_mapping: Key {key!r} matched.")
 
-        # Check value type
-        if value_type is not Any:
+        # Check value type against the *resolved* value type
+        if resolved_value_type is not Any:
             value_path = path + [f'value({key!r})']
             if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"TRACE type_utils._check_generic_mapping: Checking Value {item!r} for key {key!r} against {value_type_repr}, Path='{_format_path(value_path)}'")
-            match, details_obj = check_type(item, value_type, globalns, localns, value_path)
+                _log.debug(f"TRACE type_utils._check_generic_mapping: Checking Value {item!r} for key {key!r} against resolved type {resolved_value_type_repr}, Path='{_format_path(value_path)}'")
+            match, details_obj = check_type(item, resolved_value_type, globalns, localns, value_path, instance_map=instance_map)
             if not match:
                 # Return the inner failure details directly
                 if _log.isEnabledFor(logging.DEBUG):
@@ -1681,7 +2031,14 @@ def _check_generic_mapping(value: Mapping, args: Tuple[Any, ...], globalns: Dict
         _log.debug("TRACE type_utils._check_generic_mapping: Match (All keys/values matched). Exiting.")
     return True, None
 
-def _check_generic_set(value: Set, args: Tuple[Any, ...], globalns: Dict, localns: Optional[Dict], path: List[Union[str, int]]) -> Tuple[bool, Optional[Obituary]]:
+def _check_generic_set(
+    value: Set,
+    args: Tuple[Any, ...],
+    globalns: Dict,
+    localns: Optional[Dict],
+    path: List[Union[str, int]],
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
+) -> Tuple[bool, Optional[Obituary]]:
     """Handle `AbstractSet[T]` or `Set[T]` checks."""
     if not args: 
         if _log.isEnabledFor(logging.DEBUG):
@@ -1717,7 +2074,7 @@ def _check_generic_set(value: Set, args: Tuple[Any, ...], globalns: Dict, localn
             _log.debug(f"TRACE type_utils._check_generic_set: Checking item={item!r}, Path='{item_path_repr}'")
 
         # Performance guard: Recursive call
-        match, details_obj = check_type(item, element_type, globalns, localns, item_path)
+        match, details_obj = check_type(item, element_type, globalns, localns, item_path, instance_map=instance_map)
 
         if not match:
             if details_obj and details_obj.message:
@@ -1734,7 +2091,7 @@ def _check_generic_set(value: Set, args: Tuple[Any, ...], globalns: Dict, localn
             # but we use the original *set's path* for the final obituary,
             # as the specific element's path within the set is less useful.
             # UPDATE: Now using inner details, but still use set's path for consistency?
-            # Let's use the inner check's path (item_path) for detail, but keep set's path for overall message?
+            # Let's use the inner check's path (item_path) for detail, but keep set's path for consistency?
             # For now, let's use the inner details completely, including item_path.
             final_obituary = _create_obituary(
                 expected_repr=final_expected_repr,
@@ -1768,6 +2125,7 @@ _TYPE_HANDLERS_5ARGS: list[TypeCheckHandler5Args] = [
     _check_final,
     _check_newtype,
     _check_forward_ref,
+    _check_dataclass,
     _check_generic_alias
 ]
 
@@ -1777,7 +2135,7 @@ def check_type(
     globalns: Optional[Dict[str, Any]] = None,
     localns: Optional[Dict[str, Any]] = None,
     path: Optional[List[Union[str, int]]] = None,
-    func_id: Optional[str] = None,
+    instance_map: Optional[Dict[TypeVar, Type]] = None,
     raise_error: bool = False,
 ) -> Tuple[bool, Optional[Obituary]]:
     """Main recursive function to check if a value matches an expected type annotation.
@@ -1792,8 +2150,7 @@ def check_type(
         localns: Local namespace for resolving ForwardRefs and tracking TypeVars.
                  Must include `_func_id` key for TypeVar consistency checks.
         path: Internal list tracking the path within nested data structures.
-        func_id: Optional unique ID for TypeVar consistency tracking within a call.
-                 If None and `localns` is provided, attempts to get from `localns['_func_id']`.
+        instance_map: Dictionary mapping TypeVars to their actual types.
         raise_error: If True, raises YouDiedError immediately on failure.
 
     Returns:
@@ -1804,6 +2161,8 @@ def check_type(
     # Ensure path is initialized for recursive calls and error reporting
     path = path if path is not None else []
     path_tuple = tuple(path) if path is not None else None # Use tuple for cache key
+    # Define expected_repr early to avoid UnboundLocalError in specific paths (e.g., value is None check)
+    expected_repr = format_type_for_display(expected_type)
 
     # --- BEGIN Annotated Handling (Must be early!) ---
     # Check if Annotated is available and expected_type uses it
@@ -1837,7 +2196,7 @@ def check_type(
                 globalns=globalns,
                 localns=localns,
                 path=path,
-                func_id=func_id,
+                # func_id=func_id,
                 raise_error=raise_error # Propagate raise_error setting
             )
     # --- END Annotated Handling ---
@@ -1856,10 +2215,17 @@ def check_type(
             "Internal Error: globalns not provided to check_type"
         )
 
-    # Get function ID for TypeVar tracking if localns provided and func_id not passed
-    # Prefer explicitly passed func_id if available
-    if func_id is None and localns:
-         func_id = localns.get("_func_id")
+    # Get CONTEXT ID for TypeVar tracking if localns provided 
+    # context_id = None # Initialize # <<< REMOVE context_id logic
+    # if localns:
+    #      context_id = localns.get("_context_id")
+    #      if context_id is None:
+    #           _log.warning("check_type called with localns but missing '_context_id'. TypeVar checks might be inconsistent.")
+    # Get FUNC ID instead for caching and TypeVar tracking
+    func_id = None
+    if localns:
+        func_id = localns.get("_func_id")
+        # No warning needed here, _check_typevar handles missing func_id if required
 
     # Initialize path if None (redundant now, path_tuple used for cache key)
     current_path = path if path is not None else []
@@ -1873,25 +2239,29 @@ def check_type(
         is_generic = is_generic_alias(expected_type)
         args = get_args(expected_type) if is_generic else None
 
+        # Initial safety assumption based on simple types
         if expected_type in (int, str, float, bool, NoneType, Any):
             is_safe_to_cache = True
         elif is_literal:
             is_safe_to_cache = True
-        elif is_generic and not args:
+        elif is_generic and not args: # RE-ENABLED: Allow caching for bare built-in generics
             # Allow caching unparameterized built-in generics (list, dict, etc.)
             origin = get_origin(expected_type)
+            # Check against common, simple collection types
             if origin in (list, dict, set, tuple, collections.abc.Sequence, collections.abc.Mapping, collections.abc.Set):
                 is_safe_to_cache = True
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"--- CHECK_TYPE CACHE ALLOW: Unparameterized generic {format_type_for_display(expected_type)} ---")
         elif isinstance(expected_type, type) and not (is_generic or is_union or is_protocol or is_newtype):
-             # Allow simple custom types, excluding known complex categories
-             is_safe_to_cache = True
-             if _log.isEnabledFor(logging.DEBUG):
-                 _log.debug(f"--- CHECK_TYPE CACHE ALLOW: Simple type {format_type_for_display(expected_type)} ---")
+            # Allow simple custom types, excluding known complex categories
+            is_safe_to_cache = True
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"--- CHECK_TYPE CACHE ALLOW: Simple type {format_type_for_display(expected_type)} ---")
 
         # Explicitly unsafe types override previous decision
-        if isinstance(expected_type, (str, ForwardRef, TypeVar)) or is_union or is_protocol or is_newtype or (is_generic and args):
+        # Note: Bare generics are now potentially marked safe by the elif above, so we don't mark them unsafe here.
+        if isinstance(expected_type, (str, ForwardRef, TypeVar)) or is_union or is_protocol or is_newtype or (is_generic and args): # REMOVED: "(is_generic and not args)"
+            # Rationale: These types depend heavily on context (namespaces, bindings) or have complex internal checks.
             is_safe_to_cache = False
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"--- CHECK_TYPE CACHE SKIP: Complex/Contextual type {format_type_for_display(expected_type)} ---")
@@ -1904,7 +2274,12 @@ def check_type(
         expected_repr = format_type_for_display(expected_type)
 
     if is_safe_to_cache:
-        cache_key = (type(value), expected_type, func_id, path_tuple)
+        # Conditionally add value length to cache key for Tuple[()]
+        is_empty_tuple_hint = (expected_type == typing.Tuple[()])
+        if is_empty_tuple_hint:
+            cache_key = (type(value), expected_type, func_id, path_tuple, len(value))
+        else:
+            cache_key = (type(value), expected_type, func_id, path_tuple) # Original key
         with _check_type_cache_lock:
             cached_result = _check_type_cache_obituary.get(cache_key)
         if cached_result is not None:
@@ -1923,7 +2298,7 @@ def check_type(
              _log.debug(f"--- CHECK_TYPE SHORTCUT: Path='{_format_path(path)}', Detected Optional. Calling _check_optional directly.")
 
         # Call the modified _check_optional directly
-        final_result = _check_optional(value, expected_type, opt_inner, globalns, localns, path)
+        final_result = _check_optional(value, expected_type, opt_inner, globalns, localns, path, instance_map=instance_map)
 
         # --- Cache Write for Optional Result --- #
         if is_safe_to_cache and cache_key is not None:
@@ -1969,7 +2344,7 @@ def check_type(
                 _log.debug(f"--- CHECK_TYPE EXIT (Match: None allowed): Path='{_format_path(current_path)}'")
             return result
         else:
-            fail_obituary = _create_obituary(expected_repr if _log.isEnabledFor(logging.DEBUG) else format_type_for_display(expected_type), value, current_path, "Expected non-None value")
+            fail_obituary = _create_obituary(expected_repr if _log.isEnabledFor(logging.DEBUG) else format_type_for_display(expected_type), "NoneType", current_path, "Expected non-None value")
             result = (False, fail_obituary)
             if is_safe_to_cache and cache_key is not None:
                 with _check_type_cache_lock:
@@ -2019,7 +2394,8 @@ def check_type(
             for handler in _TYPE_HANDLERS_5ARGS:
                 if _log.isEnabledFor(logging.DEBUG):
                     _log.debug(f"--- CHECK_TYPE HANDLER (5-arg): Path='{_format_path(path)}', Calling {handler.__name__}")
-                handler_result = handler(value, expected_type, globalns, localns, path)
+                handler_result = handler(value, expected_type, globalns, localns, path, instance_map=instance_map)
+                _log.info(f"!!! check_type RAW HANDLER RESULT ({handler.__name__}): {handler_result!r}")
 
                 if handler_result is None:
                     if _log.isEnabledFor(logging.DEBUG):
@@ -2038,6 +2414,7 @@ def check_type(
                     if _log.isEnabledFor(logging.DEBUG):
                         _log.debug(f"--- CHECK_TYPE DECISION (5-arg handler {handler.__name__}): Path='{_format_path(path)}', Result={(match, details_obj)}")
                     final_result = (True, None) if match else (False, details_obj or _create_obituary(format_type_for_display(expected_type), value, path, f"Check failed in {handler.__name__}"))
+                    _log.info(f"!!! check_type ASSIGNED final_result (from handler {handler.__name__}): {final_result!r}")
                     handler_found_match = True # Mark that a handler made a decision
                     break # Exit the 5-arg loop
 
@@ -2048,31 +2425,69 @@ def check_type(
             match, details_obj = _check_simple_type(value, expected_type, path)
             if _log.isEnabledFor(logging.DEBUG):
                 _log.debug(f"--- CHECK_TYPE DEFAULT FALLBACK RESULT: Path='{_format_path(path)}', Result={(match, details_obj)}")
-        final_result = (match, details_obj or (_create_obituary(format_type_for_display(expected_type), value, path, "Type failed default isinstance check") if not match else None))
+            # Assign final_result *inside* the fallback block
+            final_result = (match, details_obj or (_create_obituary(format_type_for_display(expected_type), value, path, "Type failed default isinstance check") if not match else None))
+            _log.info(f"!!! check_type ASSIGNED final_result (from fallback): {final_result!r}")
+        # Removed the unconditional final_result assignment that was here
 
     except Exception as e:
         # Catch unexpected errors during checking
-        _log.error(f"!!! CHECK_TYPE ERROR: Path='{_format_path(path)}', Unexpected exception during check: {e!r}", exc_info=True)
-        final_result = (False, _create_obituary(format_type_for_display(expected_type), value, path, f"Internal error during type check: {e!r}"))
+        # Check if the exception is a NameError, likely from forward ref resolution
+        if isinstance(e, NameError):
+            _log.warning(f"!!! CHECK_TYPE: Re-raising NameError from check: {e!r}")
+            # Explicitly raise a new NameError, preserving the original cause
+            raise NameError(str(e)) from e
+        else:
+            # Handle other unexpected exceptions
+            _log.error(f"!!! CHECK_TYPE ERROR: Path='{_format_path(path)}', Unexpected exception during check: {e!r}", exc_info=True)
+            final_result = (False, _create_obituary(format_type_for_display(expected_type), value, path, f"Internal error during type check: {e!r}"))
 
     finally:
-        # --- Cache Write --- #
+        # --- Cache Write (Only if no exception occurred or if it was handled) ---
+        # Note: final_result might not be definitively set if an exception occurred early
+        # We only cache if is_safe_to_cache is True.
         if is_safe_to_cache and cache_key is not None:
-            with _check_type_cache_lock:
-                _check_type_cache_obituary[cache_key] = final_result
-            if _log.isEnabledFor(logging.DEBUG):
-                _log.debug(f"+++ CHECK_TYPE CACHE WRITE: Key={cache_key}, Result={final_result}, Path='{_format_path(path)}' +++")
+             # Check if final_result was assigned (i.e., no unhandled exception occurred before assignment)
+             # This check might be overly cautious depending on exact exception points.
+             # A simpler approach might be to just attempt the write.
+             try:
+                 if 'final_result' in locals(): # Check if final_result exists in local scope
+                     with _check_type_cache_lock:
+                         _check_type_cache_obituary[cache_key] = final_result
+                     if _log.isEnabledFor(logging.DEBUG):
+                         _log.debug(f"+++ CHECK_TYPE CACHE WRITE: Key={cache_key}, Result={final_result}, Path='{_format_path(path)}' +++")
+                 elif _log.isEnabledFor(logging.DEBUG):
+                      _log.debug(f"--- CHECK_TYPE CACHE SKIP (finally): final_result not assigned, likely due to early exception. Key={cache_key} ---")
+             except Exception as cache_err:
+                 _log.warning(f"Error during cache write in finally block: {cache_err!r}")
 
+
+        # Log exit regardless of success/failure, but use assigned final_result if available
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"--- CHECK_TYPE EXIT: Path='{_format_path(path)}', Final Result={final_result!r} ---")
+            exit_result_repr = f"{final_result!r}" if 'final_result' in locals() else "'final_result' unavailable (exception likely)"
+            _log.debug(f"--- CHECK_TYPE EXIT (finally): Path='{_format_path(path)}', Final Result={exit_result_repr} ---")
 
-        # Raise error if requested and match failed
-        if raise_error and not final_result[0]:
+        # Raise error if requested and match failed (This check remains in finally for immediate feedback if needed)
+        # Note: This might raise YouDiedError even if another exception is already propagating.
+        # Consider if this specific check should also move outside the finally block.
+        # For now, keeping it here as per original logic structure, but be aware.
+        if raise_error and 'final_result' in locals() and not final_result[0]:
             # Raise the custom exception type
             # Construct message using the Obituary object
             raise YouDiedError(_construct_type_error(final_result[1]), 'check_type_failure')
 
-        return final_result
+    # --- Post-Finally Processing ---
+    # This code runs only if no unhandled exception occurred in try/except
+
+    # Return the final result only if no exception was raised and propagated
+    # Ensure final_result was actually assigned (it might not be if an exception occurred before assignment)
+    if 'final_result' not in locals():
+         # This state should ideally not be reached if exceptions are handled correctly above,
+         # but return a default failure state just in case.
+         _log.error("!!! CHECK_TYPE INTERNAL ERROR: Reached return statement but final_result was not assigned. !!!")
+         return (False, _create_obituary(format_type_for_display(expected_type), value, path, "Internal error: Check result undetermined"))
+
+    return final_result
 
 # ===== PUBLIC API EXPORTS ===== #
 
@@ -2086,7 +2501,13 @@ __all__: Final[List[str]] = [
     'bind_typevar', # Needed for testing/potential advanced use
     'get_typevar_binding', # Needed for testing/potential advanced use
     '_get_caller_info', # Needed by decorator
+    'YouDiedError'
     'NoneType', # Useful constant
-    '_RETURN_ANNOTATION', # Constant needed by decorator
-    # 'YouDiedError' # Removed from exports here, will be exported from error_utils
+    # '_RETURN_ANNOTATION', # No longer needed - use inspect directly?
 ]
+
+# REMOVED _resolve_typevar_from_instance function entirely
+
+# Thread-local storage for TypeVar bindings within a function call context
+# REMOVED - replaced by standard dict above
+# _TYPEVAR_BINDINGS = threading.local()

@@ -1,6 +1,8 @@
+# ===== TESTING ===== #
 pytest>=7.0.0
 pytest-xprocess>=0.22.0
 mypy>=1.0.0
 pytest-asyncio
+pytest-anyio>=0.3.0
+trio>=0.22.0
 
-# Add other dependencies below if needed

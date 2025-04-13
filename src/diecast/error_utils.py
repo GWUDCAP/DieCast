@@ -5,8 +5,8 @@
 
 ## ===== STANDARD LIBRARY ===== ##
 from typing import (
-    Optional, Union, Final,
-    Dict, List, Any 
+    Dict, List, Any, TypeVar,
+    Optional, Union, Final
 )
 import dataclasses
 import inspect
@@ -27,12 +27,12 @@ _log: Final[logging.Logger] = logging.getLogger('diecast')
 ## ===== EXPORTS ===== ##
 __all__: Final[List[str]] = [
     'Obituary',
+    '_create_obituary',
     '_construct_type_error',
     '_format_path',
     '_get_caller_info',
     'generate_arg_error_message',
     'generate_return_error_message',
-    'YouDiedError'
 ]
 
 # ===== CLASSES ===== #
@@ -56,14 +56,30 @@ class Obituary:
     path: List[Union[str, int]]
     message: Optional[str] = None
 
-class YouDiedError(TypeError):
-    """Custom TypeError raised when a DieCast runtime type check fails."""
-    def __init__(self, message: str, obituary: Optional[Obituary] = None, cause: Optional[str] = 'unknown'):
-        super().__init__(message)
-        self.obituary = obituary
-        self.cause = cause
 
 # ===== FUNCTIONS ===== #
+
+def _create_obituary(expected_repr: str, received_repr: str, value: Any, path: List[Union[str, int]], message: Optional[str] = None) -> Obituary:
+    """Creates a structured object containing details about a type check failure.
+
+    Args:
+        expected_repr: String representation of the expected type.
+        received_repr: String representation of the received value's type.
+        value: The actual value that failed the check.
+        path: The path (list of indices/keys) to the location of the failure.
+        message: An optional specific message about the failure reason.
+
+    Returns:
+        An Obituary object with failure details.
+    """
+    # This function is simple and called only on failure, low logging priority.
+    return Obituary(
+        expected_repr=expected_repr,
+        received_repr=received_repr,
+        value=value,
+        path=path,
+        message=message
+    )
 
 def _construct_type_error(obituary: Optional[Obituary]) -> str:
     """Constructs a basic error message string from Obituary details."""
@@ -78,7 +94,7 @@ def _construct_type_error(obituary: Optional[Obituary]) -> str:
     return base_msg
 
 def _format_path(path: List[Union[str, int]]) -> str:
-    """Format the failure path list into a readable string (e.g., '[0].key('x')')."""
+    """Format the failure path list into a readable string (e.g., "['key'][0]['nested']")."""
     # Simple function, logging likely not needed unless debugging path formatting itself.
     if not path:
         return ""
@@ -86,20 +102,13 @@ def _format_path(path: List[Union[str, int]]) -> str:
     for item in path:
         if isinstance(item, int):
             result += f"[{item}]"
-        elif isinstance(item, str) and (item.startswith("key(") or item.startswith("elem(") or item.startswith("value(")):
-            # Keep pre-formatted key/elem/value segments
-            result += f".{item}" 
         elif isinstance(item, str):
-            # Use repr for string keys/attributes to handle special chars
-            # Let's default to attribute access style unless it contains special chars
-            if item.isidentifier():
-                result += f".{item}"
-            else:
-                result += f".key({item!r})" # Fallback to key() format
+            # Always use bracket notation with repr for strings
+            result += f"[{item!r}]"
         else:
             # Fallback for other segment types (should be rare)
-            result += f".[{item!r}]" 
-    return result.lstrip('.')
+            result += f"[{item!r}]"
+    return result
 
 def _get_caller_info(depth: int = 1) -> Dict[str, Any]:
     """Get information about the caller's stack frame.
@@ -126,7 +135,7 @@ def _get_caller_info(depth: int = 1) -> Dict[str, Any]:
         search_frame = frame.f_back
         while search_frame:
             module_name = search_frame.f_globals.get('__name__', '')
-            if not module_name.startswith('diecast.'):
+            if not 'diecast' in module_name:
                 # Found the first frame outside the diecast module
                 caller_frame_info = inspect.getframeinfo(search_frame)
                 if _log.isEnabledFor(logging.DEBUG):
@@ -191,50 +200,73 @@ def _generate_error_message_core(
     value_repr = repr(obituary.value) # Re-generate repr here? Or store it?
     # Truncate long value representations
     if len(value_repr) > MAX_VALUE_REPR_LENGTH:
-        value_repr = value_repr[:MAX_VALUE_REPR_LENGTH] + "..."
+        value_repr = value_repr[:MAX_VALUE_REPR_LENGTH] + f"... (truncated at {MAX_VALUE_REPR_LENGTH} chars)"
     path = obituary.path
     message = obituary.message
 
-    # --- Header --- #
-    header = f"{COLOR_RED}{COLOR_BOLD}YouDiedError:{COLOR_RESET} "
-    header += f"{check_type_str} mismatch in function '{full_func_name}' (module: {func_module}, line: {func_lineno})"
-    if param_name:
-        header += f" for argument '{param_name}'"
+    # --- Refactored Message Construction ---
+    from .type_utils import format_type_for_display # Local import
 
-    # --- Caller Location --- #
-    caller_file = caller_info.get('filename', 'unknown') # Use filename consistently
-    caller_line = caller_info.get('lineno', 0) # Use lineno consistently
-    caller_func = caller_info.get('function', 'unknown')
-    caller_loc = f"Error occurred in {COLOR_BLUE}{caller_func}{COLOR_RESET} at {COLOR_BLUE}{caller_file}:{caller_line}{COLOR_RESET}"
+    # 1. Simple Header
+    simple_header = f"{COLOR_RED}{COLOR_BOLD}YouDiedError:{COLOR_RESET} "
+    if check_type_str == 'Argument':
+        simple_header += f"Argument '{COLOR_BOLD}{param_name}{COLOR_RESET}' FAILED type check"
+    else: # Return or Yield
+        simple_header += f"{check_type_str} FAILED type check"
 
-    # --- Type Mismatch Details ---
-    type_mismatch = f"Expected: {COLOR_CYAN}{expected_type_repr}{COLOR_RESET}, but received type {COLOR_CYAN}{received_type}{COLOR_RESET}."
-    if message:
-        type_mismatch += f"\n  {COLOR_RED}Reason: {message}{COLOR_RESET}"
+    # 2. Function Info - Match test format like "Function: _err_basic_func(...)"
+    func_loc_info = f"Function: {COLOR_BOLD}{full_func_name}{COLOR_RESET}(module: {func_module}, line: {func_lineno})"
 
-    # --- Value Representation ---
-    value_info = f"Value: {COLOR_YELLOW_ORANGE}{value_repr}{COLOR_RESET}"
-    
-    # --- Path Information (if available) --- #
+    # 3. Caller Location - Match test format
+    caller_file = caller_info.get('filename', 'unknown')
+    caller_line = caller_info.get('lineno', 'unknown')
+    # Example from a log: Location: /home/somekidpunk/gwudcap/diecast/src/diecast/decorator.py:108
+    caller_loc = f"Location: {COLOR_BLUE}{caller_file}:{caller_line}{COLOR_RESET}" # Seems correct based on logs
+
+    # 4. Expected Type (Show original TypeVar if applicable)
+    expected_info = f"Expected: {COLOR_CYAN}{obituary.expected_repr}{COLOR_RESET}" # Default
+    if original_annotation is not None and isinstance(original_annotation, TypeVar):
+        original_repr = format_type_for_display(original_annotation)
+        # Only add original if it's different from the resolved one shown in obituary
+        if original_repr != obituary.expected_repr:
+            expected_info += f" (original: {COLOR_CYAN}{original_repr}{COLOR_RESET})(Resolved: {COLOR_YELLOW_ORANGE}{obituary.expected_repr}{COLOR_RESET})"
+
+    # 5. Received Value/Type
+    received_info = f"Received: {COLOR_YELLOW_ORANGE}{value_repr}{COLOR_RESET} ({COLOR_CYAN}{received_type}{COLOR_RESET})"
+
+    # 6. Path (Optional)
     path_info = ""
     if path:
         formatted_path = _format_path(path)
-        path_info = f"Path: {COLOR_BLUE}`{formatted_path}`{COLOR_RESET}"
+        path_info = f"Path: {COLOR_BLUE}{formatted_path}{COLOR_RESET}"
 
-    # --- Combine Sections --- #
-    message_parts = [header, type_mismatch, value_info]
-    if path_info: # Conditionally add path info if it exists
+    # 7. Reason (Optional)
+    reason_info = ""
+    if message:
+        reason_info = f"Reason: {COLOR_RED}{message}{COLOR_RESET}"
+
+    # Combine Parts (New Order)
+    # Assemble message parts in the order observed in failing test logs/assertions
+    message_parts = [
+        simple_header,      # YouDiedError: Argument 'x' FAILED type check
+        func_loc_info,      # Function: func_name(module: mod, line: 123)
+        caller_loc,         # Location: /path/to/caller.py:456
+        expected_info,      # Expected: str
+        received_info,      # Received: 1 (int)
+    ]
+    if path_info:           # Path: ['key'][0]
         message_parts.append(path_info)
-    message_parts.append(caller_loc)
-    
+    if reason_info:         # Reason: Value is not an instance of expected type
+        message_parts.append(reason_info)
+
     # Join with newlines and ensure a trailing newline
-    message = "\n".join(message_parts) + "\n"
+    final_message = "\n".join(message_parts) + "\n"
 
     # Future: Add optional code snippet from caller_info['code_context']
     # Future: Add optional traceback details
     if _log.isEnabledFor(logging.DEBUG):
-        _log.debug(f"TRACE type_utils._generate_error_message_core: Generated message (length={len(message)}).")
-    return message
+        _log.debug(f"TRACE type_utils._generate_error_message_core: Generated message (length={len(final_message)}).")
+    return final_message
 
 def generate_arg_error_message(
     func_name: str, func_module: str, func_lineno: int,
@@ -242,9 +274,8 @@ def generate_arg_error_message(
     arg_index: int, is_kwarg: bool,
     caller_info: Dict[str, Any],
     obituary: Obituary, # <<< CHANGED from failure_details Dict to Obituary
-    # --- ADDED func_class_name --- #
+    original_annotation: Optional[Any] = None,
     func_class_name: Optional[str] = None
-    # --- END ADDITION ---
 ) -> str:
     """Generate a detailed TypeError message for an argument mismatch using Obituary details."""
     # Simple wrapper, logging maybe less critical here.
@@ -256,12 +287,10 @@ def generate_arg_error_message(
     return _generate_error_message_core(
         func_name=func_name, func_module=func_module, func_lineno=func_lineno,
         check_type='Argument',
-        original_annotation=annotation, # <<< Pass original annotation
+        original_annotation=original_annotation, # <<< Pass original annotation
         obituary=obituary, # Pass Obituary object
         caller_info=caller_info,
-        # --- ADDED func_class_name --- #
         func_class_name=func_class_name, 
-        # --- END ADDITION ---
         param_name=param.name,
         arg_index=arg_index,
         is_kwarg=is_kwarg
@@ -272,9 +301,8 @@ def generate_return_error_message(
     annotation: Any, value: Any,
     caller_info: Dict[str, Any],
     obituary: Obituary, # <<< CHANGED from failure_details Dict to Obituary
-    # --- ADDED func_class_name --- #
+    original_annotation: Optional[Any] = None,
     func_class_name: Optional[str] = None,
-    # --- END ADDITION ---
     is_yield_value: bool = False
 ) -> str:
     """Generate a detailed TypeError message for a return value mismatch using Obituary details."""

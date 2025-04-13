@@ -211,22 +211,29 @@ def _process_class_method(cls: type, meth_name: str, meth_obj: Any):
             _log.debug(f"TRACE mold._process_class_method:   Skipping method '{meth_name}', no annotations.")
 
 def _process_module_class(module: Any, name: str, cls: type, module_file: Optional[str]):
-    """Processes a class found in the module, decorating its methods."""
-    _log.debug(f"TRACE mold._process_module_class: Processing class '{name}'")
-    if hasattr(cls, _DIECAST_MARKER):
-        _log.debug(f"TRACE mold._process_module_class: Skipping class '{name}', already marked.")
-        return
+    """Process a class found in the module, applying diecast if appropriate."""
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE mold._process_module_class: Processing class '{name}' in module '{module.__name__}'")
 
-    class_file = _safe_get_file(cls)
-    if class_file != module_file:
+    # Check if the class itself was defined in the target module
+    try:
+        cls_file = _safe_get_file(cls)
+        if module_file and cls_file != module_file:
+            if _log.isEnabledFor(logging.DEBUG):
+                _log.debug(f"TRACE mold._process_module_class: Skipping class '{name}' (imported from {cls_file}).")
+            return
+    except TypeError:
         if _log.isEnabledFor(logging.DEBUG):
-            _log.debug(f"TRACE mold._process_module_class: Skipping class '{name}', not defined in module file {module_file!r} (defined in {class_file!r})")
-        return
+            _log.warning(f"Could not determine source file for class '{name}'. Applying decorator cautiously.")
+        # Proceed cautiously if file check fails
 
-    _log.debug(f"TRACE mold._process_module_class: Processing methods in class '{name}'")
-    # Iterate over a copy of items to avoid issues if setattr modifies the dict
-    for meth_name, meth_obj in list(cls.__dict__.items()):
-        _process_class_method(cls, meth_name, meth_obj)
+    # --- UPDATED LOGIC: Apply diecast directly to the class --- 
+    # Let the @diecast decorator handle class-specific logic (generics, etc.)
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(f"TRACE mold._process_module_class: Applying diecast directly to class '{name}'.")
+    decorated_cls = _apply_diecast_safely(cls, name, module.__name__, container_type="module class")
+    # Decorator modifies the class in-place within the module's namespace.
+    # No further update needed here.
 
 ## ===== PUBLIC API ===== ##
 def mold() -> None:
