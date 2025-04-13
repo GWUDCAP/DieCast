@@ -8,7 +8,7 @@ name = "py-diecast"
 version = "0.2.0"  # Post-hardening release
 description = "A Python tool to enforce type hints as runtime assertions."
 readme = "README.md"
-requires-python = ">=3.8" # Specify minimum Python version
+requires-python = ">=3.8"
 authors = [
     { name = "ToastX", email = "toast_x@bytebot.site" },
 ]
