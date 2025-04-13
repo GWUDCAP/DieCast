@@ -14,7 +14,7 @@ authors = [
 ]
 license = "MIT"
 classifiers = [
-    "Development Status :: 4 - Beta",  # Or 3 - Alpha / 5 - Production/Stable
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -26,28 +26,21 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Quality Assurance",
 ]
+keywords = ["type hints", "typing", "runtime", "assertions", "validation", "decorator", "static analysis", "dynamic analysis"]
+
 [project.urls]
 Homepage = "https://github.com/GWUDCAP/diecast"
 Repository = "https://github.com/GWUDCAP/diecast"
-# Add dependencies here if needed later, e.g.,
-# dependencies = [
-#     "some-dependency"
-# ]
 
 [tool.setuptools.packages.find]
 where = ["src"]  # Look for packages in the 'src' directory 
 
-# Add this section for pytest configuration
 [tool.pytest.ini_options]
 testpaths = [
-    "tests",      # Correct path relative to project root (diecast/)
+    "tests",      # Relative to project root (diecast/)
 ] 
 
-# Logging configuration - proper options from pytest documentation
 log_cli = true
 log_cli_level = "DEBUG"
 log_cli_format = "%(levelname)-8s %(name)s: %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-
-# Remove unsupported 'loggers' option 
-
