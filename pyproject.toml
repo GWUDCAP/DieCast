@@ -44,6 +44,3 @@ log_cli = true
 log_cli_level = "DEBUG"
 log_cli_format = "%(levelname)-8s %(name)s: %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-
-# Remove unsupported 'loggers' option 
-
