@@ -10,7 +10,7 @@ description = "A Python tool to enforce type hints as runtime assertions."
 readme = "README.md"
 requires-python = ">=3.8" # Specify minimum Python version
 authors = [
-    { name = "toast", email = "toast@bytebot.site" },
+    { name = "ToastX", email = "toast_x@bytebot.site" },
 ]
 license = "MIT"
 classifiers = [
@@ -50,3 +50,15 @@ log_cli_format = "%(levelname)-8s %(name)s: %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 
 # Remove unsupported 'loggers' option 
+
+
+# UV Configuration for Publishing Indexes
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple/"
+publish-url = "https://upload.pypi.org/legacy/"
