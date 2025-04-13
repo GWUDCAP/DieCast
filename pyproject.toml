@@ -29,10 +29,6 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/GWUDCAP/diecast"
 Repository = "https://github.com/GWUDCAP/diecast"
-# Add dependencies here if needed later, e.g.,
-# dependencies = [
-#     "some-dependency"
-# ]
 
 [tool.setuptools.packages.find]
 where = ["src"]  # Look for packages in the 'src' directory 
